@@ -1,0 +1,6 @@
+[package]
+name = "lisp-parser"
+version = "0.1.0"
+authors = ["Marcus Klaas <mail@marcusklaas.nl>"]
+
+[dependencies]
