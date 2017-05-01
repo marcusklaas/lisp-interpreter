@@ -4,38 +4,26 @@ use std::str::Chars;
 use std::iter::Peekable;
 
 #[derive(Debug, PartialEq, Eq)]
-enum LispLiteral {
-    Integer(i64),
-}
-
-#[derive(Debug, PartialEq, Eq)]
 enum LispExpr {
-    Literal(LispLiteral),
-    Operator(LispOperator),
+    Integer(i64),
+    Operator(String),
     SubExpr(Vec<LispExpr>),
 }
 
 #[derive(Debug, PartialEq, Eq)]
 enum ParseError {
     UnbalancedParens,
-    UnexpectedChar(char),
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum LispOperator {
-    Add,
-    Subtract,
-    Func(String),
 }
 
 #[derive(Debug, PartialEq, Eq)]
 enum Token {
-    Literal(LispLiteral),
+    Integer(i64),
     OpenParen,
     CloseParen,
-    Operator(LispOperator),
+    Operator(String),
 }
 
+// Token Iterator.
 struct Tokens<'a> {
     chars: Peekable<Chars<'a>>,
 }
@@ -49,61 +37,49 @@ impl<'x> Tokens<'x> {
 }
 
 impl<'a> Iterator for Tokens<'a> {
-    type Item = Result<Token, ParseError>;
+    type Item = Token;
 
     fn next(&mut self) -> Option<Self::Item> {
-        fn parse_func(first_char: char, chars: &mut Peekable<Chars>) -> Result<Token, ParseError> {
-            let mut buf = first_char.to_string();
+        fn parse_func(first: char, chars: &mut Peekable<Chars>) -> Token {
+            let mut buf = first.to_string();
 
-            while let Some(true) = chars.peek().map(|&c| is_func_char(c)) {
+            while let Some(true) = chars.peek().map(|&c| !is_special_char(c)) {
                 buf.push(chars.next().unwrap());
             }
 
-            Ok(Token::Operator(LispOperator::Func(buf)))
+            Token::Operator(buf)
         }
 
-        // FIXME: this should return a Result with Ok type LispLiteral.
-        // Similar for parse_func.
-        fn parse_integer(first_char: char, chars: &mut Peekable<Chars>) -> Result<Token, ParseError> {
-            let mut num = first_char.to_digit(10).unwrap();
+        fn parse_integer(first: char, chars: &mut Peekable<Chars>) -> Token {
+            let mut num = first.to_digit(10).unwrap();
 
-            while let Some(Some(x)) = chars.peek().map(|c| c.to_digit(10)) {
-                num = num * 10 + x;
+            while let Some(d) = chars.peek().and_then(|c| c.to_digit(10)) {
+                num = num * 10 + d;
                 chars.next();
             }
 
-            Ok(Token::Literal(LispLiteral::Integer(num as i64)))
+            Token::Integer(num as i64)
         }
 
-        fn is_func_char(c: char) -> bool {
+        fn is_special_char(c: char) -> bool {
             match c {
-                'a'...'z' | 'A'...'Z' | '_' => true,
+                '(' | ')' => true,
+                x if x.is_whitespace() => true,
                 _ => false,
             }
         }
 
-        // FIXME: we should be able to do this more elegantly
-        loop {
-            let next_char = self.chars.next().map(|c| {
-                match c {
-                    '(' => Some(Ok(Token::OpenParen)),
-                    ')' => Some(Ok(Token::CloseParen)),
-                    '+' => Some(Ok(Token::Operator(LispOperator::Add))),
-                    '-' => Some(Ok(Token::Operator(LispOperator::Subtract))),
-                    x@ '0'...'9' => Some(parse_integer(x, &mut self.chars)),
-                    x if is_func_char(x) => Some(parse_func(x, &mut self.chars)),
-                    ' ' => None,
-                    x => Some(Err(ParseError::UnexpectedChar(x))),
-                }
-            });
-
-            if let Some(None) = next_char {
-                continue;
-            } else {
-                // TODO: remember to write a test case where parens are unbalanced!
-                return next_char.map(Option::unwrap);
-            }
+        while let Some(c) = self.chars.next() {
+            return match c {
+                '(' => Some(Token::OpenParen),
+                ')' => Some(Token::CloseParen),
+                x if x.is_whitespace() => continue,
+                x @ '0'...'9' => Some(parse_integer(x, &mut self.chars)),
+                x => Some(parse_func(x, &mut self.chars)),
+            };
         }
+
+        None
     }
 }
 
@@ -111,16 +87,14 @@ fn main() {
     let mut args = env::args();
 
     if args.len() != 2 {
-        println!("Useage: lisp-parse \"<lisp string>\"");
+        println!("Usage: lisp-parse <lisp string>");
         exit(1);
     }
 
-    // Skip first argument as it's the program name
+    // Skip first argument as it's the program name.
     args.next();
 
     let lisp_literal = args.next().unwrap();
-    println!("Lisp literal: \"{}\"", lisp_literal);
-
     let parse_result = parse_lisp_string(&lisp_literal);
     println!("Parse result: {:?}", parse_result);
 }
@@ -128,7 +102,7 @@ fn main() {
 fn parse_lisp_string(lit: &str) -> Result<Vec<LispExpr>, ParseError> {
     let mut tokens = Tokens::from_str(lit);
     // Strip the first token which we assume to be an opening paren, since
-    // parse_lisp does not expect it
+    // parse_lisp does not expect it.
     let _ = tokens.next();
 
     let result = parse_lisp(&mut tokens);
@@ -145,10 +119,10 @@ fn parse_lisp(tokens: &mut Tokens) -> Result<Vec<LispExpr>, ParseError> {
     let mut stack = Vec::new();
 
     while let Some(token) = tokens.next() {
-        let next_token = match token? {
+        let next_token = match token {
             Token::OpenParen => LispExpr::SubExpr(parse_lisp(tokens)?),
             Token::CloseParen => return Ok(stack),
-            Token::Literal(l) => LispExpr::Literal(l),
+            Token::Integer(l) => LispExpr::Integer(l),
             Token::Operator(o) => LispExpr::Operator(o),
         };
         stack.push(next_token);
@@ -162,20 +136,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parse_double_parens() {
+        let lit = "(())";
+        let expected = Ok(vec![LispExpr::SubExpr(vec![])]);
+
+        let result = super::parse_lisp_string(lit);
+        assert_eq!(expected, result);
+    }
+
+    #[test]
+    fn parse_integer() {
+        let lit = "(55)";
+        let expected = Ok(vec![LispExpr::Integer(55)]);
+
+        let result = super::parse_lisp_string(lit);
+        assert_eq!(expected, result);
+    }
+
+    #[test]
     fn parse_lisp_string_ok() {
         let lit = "(first (list 1 (+ 2 3) 9))";
 
         let expected = Ok(vec![
-            LispExpr::Operator(LispOperator::Func("first".to_owned())),
+            LispExpr::Operator("first".to_owned()),
             LispExpr::SubExpr(vec![
-                LispExpr::Operator(LispOperator::Func("list".to_owned())),
-                LispExpr::Literal(LispLiteral::Integer(1)),
+                LispExpr::Operator("list".to_owned()),
+                LispExpr::Integer(1),
                 LispExpr::SubExpr(vec![
-                    LispExpr::Operator(LispOperator::Add),
-                    LispExpr::Literal(LispLiteral::Integer(2)),
-                    LispExpr::Literal(LispLiteral::Integer(3)),
+                    LispExpr::Operator("+".to_owned()),
+                    LispExpr::Integer(2),
+                    LispExpr::Integer(3),
                 ]),
-                LispExpr::Literal(LispLiteral::Integer(9)),
+                LispExpr::Integer(9),
             ]),
         ]);
 
