@@ -40,10 +40,18 @@ impl<'a> Iterator for Tokens<'a> {
     type Item = Token;
 
     fn next(&mut self) -> Option<Self::Item> {
+        fn is_function_char(c: &char) -> bool {
+            match *c {
+                '(' | ')' => false,
+                x if x.is_whitespace() => false,
+                _ => true,
+            }
+        }
+
         fn parse_func(first: char, chars: &mut Peekable<Chars>) -> Token {
             let mut buf = first.to_string();
 
-            while let Some(true) = chars.peek().map(|&c| !is_special_char(c)) {
+            while let Some(true) = chars.peek().map(is_function_char) {
                 buf.push(chars.next().unwrap());
             }
 
@@ -59,14 +67,6 @@ impl<'a> Iterator for Tokens<'a> {
             }
 
             Token::Integer(num as i64)
-        }
-
-        fn is_special_char(c: char) -> bool {
-            match c {
-                '(' | ')' => true,
-                x if x.is_whitespace() => true,
-                _ => false,
-            }
         }
 
         while let Some(c) = self.chars.next() {
