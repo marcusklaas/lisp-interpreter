@@ -5,7 +5,7 @@ use std::iter::Peekable;
 
 #[derive(Debug, PartialEq, Eq)]
 enum LispExpr {
-    Integer(i64),
+    Integer(u64),
     Operator(String),
     SubExpr(Vec<LispExpr>),
 }
@@ -17,7 +17,7 @@ enum ParseError {
 
 #[derive(Debug, PartialEq, Eq)]
 enum Token {
-    Integer(i64),
+    Integer(u64),
     OpenParen,
     CloseParen,
     Operator(String),
@@ -66,7 +66,7 @@ impl<'a> Iterator for Tokens<'a> {
                 chars.next();
             }
 
-            Token::Integer(num as i64)
+            Token::Integer(num as u64)
         }
 
         while let Some(c) = self.chars.next() {
@@ -116,7 +116,7 @@ enum EvaluationError {
 
 #[derive(Debug, PartialEq, Eq)]
 enum LispValue {
-    Integer(i64),
+    Integer(u64),
     SubValue(Vec<LispValue>),
 }
 
@@ -195,22 +195,45 @@ fn parse_lisp(tokens: &mut Tokens) -> Result<Vec<LispExpr>, ParseError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::convert::From;
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum LispError {
+        Parse(ParseError),
+        Evaluation(EvaluationError),
+    }
+
+    impl From<EvaluationError> for LispError {
+        fn from(err: EvaluationError) -> LispError {
+            LispError::Evaluation(err)
+        }
+    }
+
+    impl From<ParseError> for LispError {
+        fn from(err: ParseError) -> LispError {
+            LispError::Parse(err)
+        }
+    }
+
+    fn run_lisp(lit: &str) -> Result<LispValue, LispError> {
+        Ok(evaluate_lisp_expr(&parse_lisp_string(lit)?)?)
+    }
 
     #[test]
     fn parse_double_parens() {
         let lit = "(())";
-        let expected = Ok(vec![LispExpr::SubExpr(vec![])]);
+        let expected = Ok(LispExpr::SubExpr(vec![LispExpr::SubExpr(vec![])]));
 
-        let result = super::parse_lisp_string(lit);
+        let result = parse_lisp_string(lit);
         assert_eq!(expected, result);
     }
 
     #[test]
     fn parse_integer() {
         let lit = "(55)";
-        let expected = Ok(vec![LispExpr::Integer(55)]);
+        let expected = Ok(LispExpr::SubExpr(vec![LispExpr::Integer(55)]));
 
-        let result = super::parse_lisp_string(lit);
+        let result = parse_lisp_string(lit);
         assert_eq!(expected, result);
     }
 
@@ -218,7 +241,7 @@ mod tests {
     fn parse_lisp_string_ok() {
         let lit = "(first (list 1 (+ 2 3) 9))";
 
-        let expected = Ok(vec![
+        let expected = Ok(LispExpr::SubExpr(vec![
             LispExpr::Operator("first".to_owned()),
             LispExpr::SubExpr(vec![
                 LispExpr::Operator("list".to_owned()),
@@ -230,9 +253,9 @@ mod tests {
                 ]),
                 LispExpr::Integer(9),
             ]),
-        ]);
+        ]));
 
-        let result = super::parse_lisp_string(lit);
+        let result = parse_lisp_string(lit);
         assert_eq!(expected, result);
     }
 
@@ -240,7 +263,7 @@ mod tests {
     fn parse_lisp_string_unbalanced() {
         let lit = "(+ 1 (- 10 5)";
         let expected = Err(ParseError::UnbalancedParens);
-        let result = super::parse_lisp_string(lit);
+        let result = parse_lisp_string(lit);
 
         assert_eq!(expected, result);
     }
@@ -249,8 +272,66 @@ mod tests {
     fn parse_lisp_string_overbalanced() {
         let lit = "())";
         let expected = Err(ParseError::UnbalancedParens);
-        let result = super::parse_lisp_string(lit);
+        let result = parse_lisp_string(lit);
         
+        assert_eq!(expected, result);
+    }
+
+    #[test]
+    fn run_simple_lisp_addition() {
+        let lit = "(3 (+ 1 3) 0)";
+        let expected = Ok(LispValue::SubValue(vec![
+            LispValue::Integer(3),
+            LispValue::Integer(4),
+            LispValue::Integer(0)
+        ]));
+        let result = run_lisp(lit);
+
+        assert_eq!(expected, result);
+    }
+
+    #[test]
+    fn run_nested_evaluation() {
+        let lit = "(+ 10 (+ 1 10))";
+        let expected = Ok(LispValue::Integer(21));
+        let result = run_lisp(lit);
+
+        assert_eq!(expected, result);
+    }
+
+    #[test]
+    fn too_few_arguments() {
+        let lit = "(+ 10)";
+        let expected = Err(LispError::Evaluation(EvaluationError::ArgumentCountMismatch));
+        let result = run_lisp(lit);
+
+        assert_eq!(expected, result);
+    }
+
+    #[test]
+    fn too_many_arguments() {
+        let lit = "(+ 0 3 5)";
+        let expected = Err(LispError::Evaluation(EvaluationError::ArgumentCountMismatch));
+        let result = run_lisp(lit);
+
+        assert_eq!(expected, result);
+    }
+
+    #[test]
+    fn unexpected_operator() {
+        let lit = "(10 + 3)";
+        let expected = Err(LispError::Evaluation(EvaluationError::UnexpectedOperator));
+        let result = run_lisp(lit);
+
+        assert_eq!(expected, result);
+    }
+
+    #[test]
+    fn undefined_function() {
+        let lit = "(first (10 3))";
+        let expected = Err(LispError::Evaluation(EvaluationError::UndefinedFunction));
+        let result = run_lisp(lit);
+
         assert_eq!(expected, result);
     }
 }
