@@ -83,6 +83,7 @@ impl<'a> Iterator for Tokens<'a> {
     }
 }
 
+
 fn main() {
     let mut args = env::args();
 
@@ -97,9 +98,69 @@ fn main() {
     let lisp_literal = args.next().unwrap();
     let parse_result = parse_lisp_string(&lisp_literal);
     println!("Parse result: {:?}", parse_result);
+
+    if let Ok(ref expr) = parse_result {
+        let eval = evaluate_lisp_expr(expr);
+
+        println!("Evaluation result: {:?}", eval);
+    }
 }
 
-fn parse_lisp_string(lit: &str) -> Result<Vec<LispExpr>, ParseError> {
+#[derive(Debug, PartialEq, Eq)]
+enum EvaluationError {
+    UndefinedFunction,
+    UnexpectedOperator,
+    ArgumentCountMismatch,
+    ArgumentTypeMismatch,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum LispValue {
+    Integer(i64),
+    SubValue(Vec<LispValue>),
+}
+
+fn evaluate_lisp_expr(expr: &LispExpr) -> Result<LispValue, EvaluationError> {
+    match *expr {
+        LispExpr::Integer(n) => Ok(LispValue::Integer(n)),
+        LispExpr::Operator(_) => Err(EvaluationError::UnexpectedOperator),
+        LispExpr::SubExpr(ref expr_vec) => {
+            if let LispExpr::Operator(ref name) = expr_vec[0] {
+                evaluate_lisp_fn(name, expr_vec[1..].iter().map(evaluate_lisp_expr))
+            } else {
+                let inner_vec: Result<_, _> = expr_vec.iter().map(evaluate_lisp_expr).collect();
+                Ok(LispValue::SubValue(inner_vec?))
+            }
+        }
+    }
+}
+
+fn evaluate_lisp_fn<I>(fn_name: &str, mut args: I) -> Result<LispValue, EvaluationError> 
+    where I: Iterator<Item=Result<LispValue, EvaluationError>>
+{
+    match fn_name {
+        "+" => {
+            let first_arg = args.next();
+            let second_arg = args.next();
+            let rest = args.next();
+
+            match (first_arg, second_arg, rest) {
+                (Some(lhs), Some(rhs), None) => {
+                    lhs.and_then(|left| rhs.and_then(|right| {
+                        match (left, right) {
+                            (LispValue::Integer(x), LispValue::Integer(y)) => Ok(LispValue::Integer(x + y)),
+                            _ => Err(EvaluationError::ArgumentTypeMismatch),
+                        }
+                    }))
+                }
+                _ => Err(EvaluationError::ArgumentCountMismatch),
+            }
+        }
+        _ => Err(EvaluationError::UndefinedFunction),
+    }
+}
+
+fn parse_lisp_string(lit: &str) -> Result<LispExpr, ParseError> {
     let mut tokens = Tokens::from_str(lit);
     // Strip the first token which we assume to be an opening paren, since
     // parse_lisp does not expect it.
@@ -108,7 +169,7 @@ fn parse_lisp_string(lit: &str) -> Result<Vec<LispExpr>, ParseError> {
     let result = parse_lisp(&mut tokens);
 
     match tokens.next() {
-        None => result,
+        None => result.map(|expr_vec| LispExpr::SubExpr(expr_vec)),
         Some(_) => Err(ParseError::UnbalancedParens),
     }
 }
