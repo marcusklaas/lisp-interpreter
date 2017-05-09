@@ -30,9 +30,7 @@ struct Tokens<'a> {
 
 impl<'x> Tokens<'x> {
     fn from_str<'a>(literal: &'a str) -> Tokens<'a> {
-        Tokens {
-            chars: literal.chars().peekable(),
-        }
+        Tokens { chars: literal.chars().peekable() }
     }
 }
 
@@ -71,12 +69,12 @@ impl<'a> Iterator for Tokens<'a> {
 
         while let Some(c) = self.chars.next() {
             return match c {
-                '(' => Some(Token::OpenParen),
-                ')' => Some(Token::CloseParen),
-                x if x.is_whitespace() => continue,
-                x @ '0'...'9' => Some(parse_integer(x, &mut self.chars)),
-                x => Some(parse_func(x, &mut self.chars)),
-            };
+                       '(' => Some(Token::OpenParen),
+                       ')' => Some(Token::CloseParen),
+                       x if x.is_whitespace() => continue,
+                       x @ '0'...'9' => Some(parse_integer(x, &mut self.chars)),
+                       x => Some(parse_func(x, &mut self.chars)),
+                   };
         }
 
         None
@@ -135,23 +133,21 @@ fn evaluate_lisp_expr(expr: &LispExpr) -> Result<LispValue, EvaluationError> {
     }
 }
 
-fn evaluate_lisp_fn<I>(fn_name: &str, mut args: I) -> Result<LispValue, EvaluationError> 
-    where I: Iterator<Item=Result<LispValue, EvaluationError>>
+fn evaluate_lisp_fn<I>(fn_name: &str, mut args: I) -> Result<LispValue, EvaluationError>
+    where I: Iterator<Item = Result<LispValue, EvaluationError>>
 {
     match fn_name {
         "+" => {
-            let first_arg = args.next();
-            let second_arg = args.next();
-            let rest = args.next();
-
-            match (first_arg, second_arg, rest) {
+            match (args.next(), args.next(), args.next()) {
                 (Some(lhs), Some(rhs), None) => {
-                    lhs.and_then(|left| rhs.and_then(|right| {
-                        match (left, right) {
-                            (LispValue::Integer(x), LispValue::Integer(y)) => Ok(LispValue::Integer(x + y)),
-                            _ => Err(EvaluationError::ArgumentTypeMismatch),
-                        }
-                    }))
+                    lhs.and_then(|left| {
+                        rhs.and_then(|right| match (left, right) {
+                                         (LispValue::Integer(x), LispValue::Integer(y)) => {
+                                             Ok(LispValue::Integer(x + y))
+                                         }
+                                         _ => Err(EvaluationError::ArgumentTypeMismatch),
+                                     })
+                    })
                 }
                 _ => Err(EvaluationError::ArgumentCountMismatch),
             }
@@ -241,9 +237,8 @@ mod tests {
     fn parse_lisp_string_ok() {
         let lit = "(first (list 1 (+ 2 3) 9))";
 
-        let expected = Ok(LispExpr::SubExpr(vec![
-            LispExpr::Operator("first".to_owned()),
-            LispExpr::SubExpr(vec![
+        let expected = Ok(LispExpr::SubExpr(vec![LispExpr::Operator("first".to_owned()),
+                                                 LispExpr::SubExpr(vec![
                 LispExpr::Operator("list".to_owned()),
                 LispExpr::Integer(1),
                 LispExpr::SubExpr(vec![
@@ -252,8 +247,7 @@ mod tests {
                     LispExpr::Integer(3),
                 ]),
                 LispExpr::Integer(9),
-            ]),
-        ]));
+            ])]));
 
         let result = parse_lisp_string(lit);
         assert_eq!(expected, result);
@@ -273,18 +267,16 @@ mod tests {
         let lit = "())";
         let expected = Err(ParseError::UnbalancedParens);
         let result = parse_lisp_string(lit);
-        
+
         assert_eq!(expected, result);
     }
 
     #[test]
     fn run_simple_lisp_addition() {
         let lit = "(3 (+ 1 3) 0)";
-        let expected = Ok(LispValue::SubValue(vec![
-            LispValue::Integer(3),
-            LispValue::Integer(4),
-            LispValue::Integer(0)
-        ]));
+        let expected = Ok(LispValue::SubValue(vec![LispValue::Integer(3),
+                                                   LispValue::Integer(4),
+                                                   LispValue::Integer(0)]));
         let result = run_lisp(lit);
 
         assert_eq!(expected, result);
