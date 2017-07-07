@@ -341,4 +341,19 @@ mod tests {
 
         assert_eq!(expected, result);
     }
+
+    #[test]
+    fn test_variable() {
+        let mut var_map = HashMap::new();
+        var_map.insert("x".into(), NameBinding::Value(LispValue::Integer(5000)));
+        let state = State {
+            bound: var_map,
+        };
+
+        let lit = "(+ x x)";
+        let expected = Ok(LispValue::Integer(10_000u64));
+        let result: Result<_, LispError> = parse_lisp_string(lit).map_err(From::from).and_then(|ast| evaluate_lisp_expr(&ast, &state).map_err(From::from));
+
+        assert_eq!(expected, result);
+    }
 }
