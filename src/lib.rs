@@ -30,6 +30,10 @@ impl State {
             Err(EvaluationError::UnknownVariable)
         }
     }
+
+    fn set_variable(&mut self, var_name: &str, val: LispValue) {
+        self.bound.insert(var_name.into(), NameBinding::Value(val));
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -127,14 +131,14 @@ pub enum LispValue {
     SubValue(Vec<LispValue>),
 }
 
-pub fn evaluate_lisp_expr(expr: &LispExpr, state: &State) -> Result<LispValue, EvaluationError> {
+pub fn evaluate_lisp_expr(expr: &LispExpr, state: &mut State) -> Result<LispValue, EvaluationError> {
     match *expr {
         LispExpr::Integer(n) => Ok(LispValue::Integer(n)),
         LispExpr::Operator(_) => Err(EvaluationError::UnexpectedOperator),
         LispExpr::Variable(ref x) => state.get_variable_value(x),
         LispExpr::SubExpr(ref expr_vec) => {
             if let LispExpr::Operator(ref name) = expr_vec[0] {
-                evaluate_lisp_fn(name, expr_vec[1..].iter().map(|x| evaluate_lisp_expr(x, state)))
+                evaluate_lisp_fn(name, expr_vec[1..].iter(), state)
             } else {
                 let inner_vec: Result<_, _> = expr_vec.iter().map(|x| evaluate_lisp_expr(x, state)).collect();
                 Ok(LispValue::SubValue(inner_vec?))
@@ -143,24 +147,45 @@ pub fn evaluate_lisp_expr(expr: &LispExpr, state: &State) -> Result<LispValue, E
     }
 }
 
-fn evaluate_lisp_fn<I>(fn_name: &str, mut args: I) -> Result<LispValue, EvaluationError>
-    where I: Iterator<Item = Result<LispValue, EvaluationError>>
+fn get_binary_args<'a, I>(mut args: I) -> Result<(&'a LispExpr, &'a LispExpr), EvaluationError>
+    where I: Iterator<Item = &'a LispExpr>
+{
+    match (args.next(), args.next(), args.next()) {
+        (Some(lhs), Some(rhs), None) => Ok((lhs, rhs)),
+        _ => Err(EvaluationError::ArgumentCountMismatch),
+    }
+}
+
+fn evaluate_lisp_fn<'a, I>(fn_name: &str, mut args: I, state: &mut State) -> Result<LispValue, EvaluationError>
+    where I: Iterator<Item = &'a LispExpr>
 {
     match fn_name {
         "+" => {
-            match (args.next(), args.next(), args.next()) {
-                (Some(lhs), Some(rhs), None) => {
-                    lhs.and_then(|left| {
-                        rhs.and_then(|right| match (left, right) {
-                                         (LispValue::Integer(x), LispValue::Integer(y)) => {
-                                             Ok(LispValue::Integer(x + y))
-                                         }
-                                         _ => Err(EvaluationError::ArgumentTypeMismatch),
-                                     })
+            get_binary_args(args).and_then(|(left, right)| {
+                evaluate_lisp_expr(left, state).and_then(|lhs| {
+                    evaluate_lisp_expr(right, state).and_then(|rhs| {
+                        match (lhs, rhs) {
+                            (LispValue::Integer(x), LispValue::Integer(y)) => {
+                                Ok(LispValue::Integer(x + y))
+                            }
+                            _ => Err(EvaluationError::ArgumentTypeMismatch),
+                        }
                     })
-                }
-                _ => Err(EvaluationError::ArgumentCountMismatch),
-            }
+                })
+            })
+        }
+        "define" => {
+            get_binary_args(args).and_then(|(left, right)| {
+                evaluate_lisp_expr(right, state).and_then(|val| {
+                    if let &LispExpr::Variable(ref var_name) = left {
+                        state.set_variable(var_name, val.clone());
+                        Ok(val)
+                    } else {
+                        // TODO: give this its own proper error
+                        Err(EvaluationError::UndefinedFunction)
+                    }
+                })
+            })
         }
         _ => Err(EvaluationError::UndefinedFunction),
     }
@@ -193,9 +218,13 @@ fn parse_lisp(tokens: &mut Tokens) -> Result<Vec<LispExpr>, ParseError> {
             // We'll just assume the it's an operator when it's the first
             // token in the list. This should work okay for correct lisp,
             // but may be difficult to debug for incorrect lisp.
-            // FIXME: the clone is actually unnecessary, but otherwise the borrow checker complains..
-            Token::OpVar(ref o) if stack.is_empty() => LispExpr::Operator(o.clone()),
-            Token::OpVar(o) => LispExpr::Variable(o),
+            Token::OpVar(o) => {
+                if stack.is_empty() {
+                    LispExpr::Operator(o)
+                } else {
+                    LispExpr::Variable(o)
+                }
+            }
         };
         stack.push(next_token);
     }
@@ -226,8 +255,12 @@ mod tests {
         }
     }
 
+    fn run_lisp_with_state(lit: &str, state: &mut State) -> Result<LispValue, LispError> {
+        Ok(evaluate_lisp_expr(&parse_lisp_string(lit)?, state)?)
+    }
+
     fn run_lisp(lit: &str) -> Result<LispValue, LispError> {
-        Ok(evaluate_lisp_expr(&parse_lisp_string(lit)?, &State::new())?)
+        run_lisp_with_state(lit, &mut State::new())
     }
 
     #[test]
@@ -346,13 +379,26 @@ mod tests {
     fn test_variable() {
         let mut var_map = HashMap::new();
         var_map.insert("x".into(), NameBinding::Value(LispValue::Integer(5000)));
-        let state = State {
+        let mut state = State {
             bound: var_map,
         };
 
         let lit = "(+ x x)";
         let expected = Ok(LispValue::Integer(10_000u64));
-        let result: Result<_, LispError> = parse_lisp_string(lit).map_err(From::from).and_then(|ast| evaluate_lisp_expr(&ast, &state).map_err(From::from));
+        let result: Result<_, LispError> = parse_lisp_string(lit).map_err(From::from).and_then(|ast| evaluate_lisp_expr(&ast, &mut state).map_err(From::from));
+
+        assert_eq!(expected, result);
+    }
+
+    #[test]
+    fn test_variable_setting() {
+        let mut state = State::new();
+        let lit = "(define x 5)";
+        run_lisp_with_state(lit, &mut state);
+
+        let lit = "(+ x 7)";
+        let expected = Ok(LispValue::Integer(12));
+        let result = run_lisp_with_state(lit, &mut state);
 
         assert_eq!(expected, result);
     }
