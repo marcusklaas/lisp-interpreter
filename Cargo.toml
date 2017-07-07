@@ -1,6 +1,12 @@
 [package]
-name = "lisp-parser"
+name = "yalp"
 version = "0.1.0"
 authors = ["Marcus Klaas <mail@marcusklaas.nl>"]
 
 [dependencies]
+
+[lib]
+name = "yalp"
+
+[[bin]]
+name = "yalp"

@@ -1,4 +1,4 @@
 [root]
-name = "lisp-parser"
+name = "yalp"
 version = "0.1.0"
 
