@@ -18,8 +18,13 @@ pub struct State {
 
 impl State {
     pub fn new() -> State {
-        State {
-            bound: HashMap::new()
+        State { bound: HashMap::new() }
+    }
+
+    fn get_function(&self, name: &str) -> Option<&LispFunc> {
+        match self.bound.get(name) {
+            Some(&NameBinding::Function(ref x)) => Some(x),
+            _ => None,
         }
     }
 
@@ -39,8 +44,7 @@ impl State {
 #[derive(Debug, PartialEq, Eq)]
 pub enum LispExpr {
     Integer(u64),
-    Variable(String),
-    Operator(String),
+    OpVar(String),
     SubExpr(Vec<LispExpr>),
 }
 
@@ -104,12 +108,12 @@ impl<'a> Iterator for Tokens<'a> {
 
         while let Some(c) = self.chars.next() {
             return match c {
-                       '(' => Some(Token::OpenParen),
-                       ')' => Some(Token::CloseParen),
-                       x if x.is_whitespace() => continue,
-                       x @ '0'...'9' => Some(parse_integer(x, &mut self.chars)),
-                       x => Some(parse_func(x, &mut self.chars)),
-                   };
+                '(' => Some(Token::OpenParen),
+                ')' => Some(Token::CloseParen),
+                x if x.is_whitespace() => continue,
+                x @ '0'...'9' => Some(parse_integer(x, &mut self.chars)),
+                x => Some(parse_func(x, &mut self.chars)),
+            };
         }
 
         None
@@ -131,24 +135,33 @@ pub enum LispValue {
     SubValue(Vec<LispValue>),
 }
 
-pub fn evaluate_lisp_expr(expr: &LispExpr, state: &mut State) -> Result<LispValue, EvaluationError> {
+pub fn evaluate_lisp_expr(
+    expr: &LispExpr,
+    state: &mut State,
+) -> Result<LispValue, EvaluationError> {
     match *expr {
         LispExpr::Integer(n) => Ok(LispValue::Integer(n)),
-        LispExpr::Operator(_) => Err(EvaluationError::UnexpectedOperator),
-        LispExpr::Variable(ref x) => state.get_variable_value(x),
         LispExpr::SubExpr(ref expr_vec) => {
-            if let LispExpr::Operator(ref name) = expr_vec[0] {
-                evaluate_lisp_fn(name, expr_vec[1..].iter(), state)
-            } else {
-                let inner_vec: Result<_, _> = expr_vec.iter().map(|x| evaluate_lisp_expr(x, state)).collect();
-                Ok(LispValue::SubValue(inner_vec?))
+            if let LispExpr::OpVar(ref name) = expr_vec[0] {
+                // First OpVar could be a function, but also a variable.
+                if let Some(res) = evaluate_lisp_fn(name, expr_vec[1..].iter(), state) {
+                    return res;
+                }
             }
+
+            let inner_vec: Result<_, _> = expr_vec
+                .iter()
+                .map(|x| evaluate_lisp_expr(x, state))
+                .collect();
+            Ok(LispValue::SubValue(inner_vec?))
         }
+        LispExpr::OpVar(ref x) => state.get_variable_value(x),
     }
 }
 
 fn get_binary_args<'a, I>(mut args: I) -> Result<(&'a LispExpr, &'a LispExpr), EvaluationError>
-    where I: Iterator<Item = &'a LispExpr>
+where
+    I: Iterator<Item = &'a LispExpr>,
 {
     match (args.next(), args.next(), args.next()) {
         (Some(lhs), Some(rhs), None) => Ok((lhs, rhs)),
@@ -156,20 +169,24 @@ fn get_binary_args<'a, I>(mut args: I) -> Result<(&'a LispExpr, &'a LispExpr), E
     }
 }
 
-fn evaluate_lisp_fn<'a, I>(fn_name: &str, mut args: I, state: &mut State) -> Result<LispValue, EvaluationError>
-    where I: Iterator<Item = &'a LispExpr>
+// Returns `None` when the function is not defined, `Some(Result<..>)` when it is.
+fn evaluate_lisp_fn<'a, I>(
+    fn_name: &str,
+    mut args: I,
+    state: &mut State,
+) -> Option<Result<LispValue, EvaluationError>>
+where
+    I: Iterator<Item = &'a LispExpr>,
 {
-    match fn_name {
+    Some(match fn_name {
         "+" => {
             get_binary_args(args).and_then(|(left, right)| {
                 evaluate_lisp_expr(left, state).and_then(|lhs| {
-                    evaluate_lisp_expr(right, state).and_then(|rhs| {
-                        match (lhs, rhs) {
-                            (LispValue::Integer(x), LispValue::Integer(y)) => {
-                                Ok(LispValue::Integer(x + y))
-                            }
-                            _ => Err(EvaluationError::ArgumentTypeMismatch),
+                    evaluate_lisp_expr(right, state).and_then(|rhs| match (lhs, rhs) {
+                        (LispValue::Integer(x), LispValue::Integer(y)) => {
+                            Ok(LispValue::Integer(x + y))
                         }
+                        _ => Err(EvaluationError::ArgumentTypeMismatch),
                     })
                 })
             })
@@ -177,7 +194,7 @@ fn evaluate_lisp_fn<'a, I>(fn_name: &str, mut args: I, state: &mut State) -> Res
         "define" => {
             get_binary_args(args).and_then(|(left, right)| {
                 evaluate_lisp_expr(right, state).and_then(|val| {
-                    if let &LispExpr::Variable(ref var_name) = left {
+                    if let &LispExpr::OpVar(ref var_name) = left {
                         state.set_variable(var_name, val.clone());
                         Ok(val)
                     } else {
@@ -187,8 +204,8 @@ fn evaluate_lisp_fn<'a, I>(fn_name: &str, mut args: I, state: &mut State) -> Res
                 })
             })
         }
-        _ => Err(EvaluationError::UndefinedFunction),
-    }
+        _ => return None,
+    })
 }
 
 pub fn parse_lisp_string(lit: &str) -> Result<LispExpr, ParseError> {
@@ -215,16 +232,7 @@ fn parse_lisp(tokens: &mut Tokens) -> Result<Vec<LispExpr>, ParseError> {
             Token::OpenParen => LispExpr::SubExpr(parse_lisp(tokens)?),
             Token::CloseParen => return Ok(stack),
             Token::Integer(l) => LispExpr::Integer(l),
-            // We'll just assume the it's an operator when it's the first
-            // token in the list. This should work okay for correct lisp,
-            // but may be difficult to debug for incorrect lisp.
-            Token::OpVar(o) => {
-                if stack.is_empty() {
-                    LispExpr::Operator(o)
-                } else {
-                    LispExpr::Variable(o)
-                }
-            }
+            Token::OpVar(o) => LispExpr::OpVar(o),
         };
         stack.push(next_token);
     }
@@ -285,17 +293,19 @@ mod tests {
     fn parse_lisp_string_ok() {
         let lit = "(first (list 1 (+ 2 3) 9))";
 
-        let expected = Ok(LispExpr::SubExpr(vec![LispExpr::Operator("first".to_owned()),
-                                                 LispExpr::SubExpr(vec![
-                LispExpr::Operator("list".to_owned()),
+        let expected = Ok(LispExpr::SubExpr(vec![
+            LispExpr::OpVar("first".to_owned()),
+            LispExpr::SubExpr(vec![
+                LispExpr::OpVar("list".to_owned()),
                 LispExpr::Integer(1),
                 LispExpr::SubExpr(vec![
-                    LispExpr::Operator("+".to_owned()),
+                    LispExpr::OpVar("+".to_owned()),
                     LispExpr::Integer(2),
                     LispExpr::Integer(3),
                 ]),
                 LispExpr::Integer(9),
-            ])]));
+            ]),
+        ]));
 
         let result = parse_lisp_string(lit);
         assert_eq!(expected, result);
@@ -322,9 +332,11 @@ mod tests {
     #[test]
     fn run_simple_lisp_addition() {
         let lit = "(3 (+ 1 3) 0)";
-        let expected = Ok(LispValue::SubValue(vec![LispValue::Integer(3),
-                                                   LispValue::Integer(4),
-                                                   LispValue::Integer(0)]));
+        let expected = Ok(LispValue::SubValue(vec![
+            LispValue::Integer(3),
+            LispValue::Integer(4),
+            LispValue::Integer(0),
+        ]));
         let result = run_lisp(lit);
 
         assert_eq!(expected, result);
@@ -342,7 +354,9 @@ mod tests {
     #[test]
     fn too_few_arguments() {
         let lit = "(+ 10)";
-        let expected = Err(LispError::Evaluation(EvaluationError::ArgumentCountMismatch));
+        let expected = Err(LispError::Evaluation(
+            EvaluationError::ArgumentCountMismatch,
+        ));
         let result = run_lisp(lit);
 
         assert_eq!(expected, result);
@@ -351,7 +365,9 @@ mod tests {
     #[test]
     fn too_many_arguments() {
         let lit = "(+ 0 3 5)";
-        let expected = Err(LispError::Evaluation(EvaluationError::ArgumentCountMismatch));
+        let expected = Err(LispError::Evaluation(
+            EvaluationError::ArgumentCountMismatch,
+        ));
         let result = run_lisp(lit);
 
         assert_eq!(expected, result);
@@ -369,7 +385,7 @@ mod tests {
     #[test]
     fn undefined_function() {
         let lit = "(first (10 3))";
-        let expected = Err(LispError::Evaluation(EvaluationError::UndefinedFunction));
+        let expected = Err(LispError::Evaluation(EvaluationError::UnknownVariable));
         let result = run_lisp(lit);
 
         assert_eq!(expected, result);
@@ -379,13 +395,14 @@ mod tests {
     fn test_variable() {
         let mut var_map = HashMap::new();
         var_map.insert("x".into(), NameBinding::Value(LispValue::Integer(5000)));
-        let mut state = State {
-            bound: var_map,
-        };
+        let mut state = State { bound: var_map };
 
         let lit = "(+ x x)";
         let expected = Ok(LispValue::Integer(10_000u64));
-        let result: Result<_, LispError> = parse_lisp_string(lit).map_err(From::from).and_then(|ast| evaluate_lisp_expr(&ast, &mut state).map_err(From::from));
+        let result: Result<_, LispError> =
+            parse_lisp_string(lit).map_err(From::from).and_then(|ast| {
+                evaluate_lisp_expr(&ast, &mut state).map_err(From::from)
+            });
 
         assert_eq!(expected, result);
     }
@@ -398,6 +415,24 @@ mod tests {
 
         let lit = "(+ x 7)";
         let expected = Ok(LispValue::Integer(12));
+        let result = run_lisp_with_state(lit, &mut state);
+
+        assert_eq!(expected, result);
+    }
+
+    #[test]
+    fn test_variable_list() {
+        let mut var_map = HashMap::new();
+        var_map.insert("x".into(), NameBinding::Value(LispValue::Integer(3)));
+        let mut state = State { bound: var_map };
+
+        let lit = "(x 1 (+ 1 x) 5)";
+        let expected = Ok(LispValue::SubValue(vec![
+            LispValue::Integer(3),
+            LispValue::Integer(1),
+            LispValue::Integer(4),
+            LispValue::Integer(5),
+        ]));
         let result = run_lisp_with_state(lit, &mut state);
 
         assert_eq!(expected, result);
