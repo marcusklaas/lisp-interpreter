@@ -220,6 +220,19 @@ where
     }
 }
 
+fn unitary_int_op<'a, I, F>(args: I, state: &mut State, f: F) -> Result<LispValue, EvaluationError>
+where
+    I: Iterator<Item = &'a LispExpr>,
+    F: Fn(u64) -> LispValue,
+{
+    save_args(args, 1).and_then(|arg_vec| {
+        evaluate_lisp_expr(arg_vec[0], state).and_then(|val| match val {
+            LispValue::Integer(i) => Ok(f(i)),
+            _ => Err(EvaluationError::ArgumentTypeMismatch),
+        })
+    })
+}
+
 // Returns `None` when the function is not defined, `Some(Result<..>)` when it is.
 fn evaluate_lisp_fn<'a, I>(
     fn_name: &str,
@@ -241,16 +254,10 @@ where
                 Err(EvaluationError::ArgumentTypeMismatch)
             })
         }
-        "zero?" => {
-            save_args(args, 1).and_then(|arg_vec| {
-                evaluate_lisp_expr(arg_vec[0], state).and_then(|val| {
-                    match val {
-                        LispValue::Integer(i) => Ok(LispValue::Truth(i == 0)),
-                        _ => Err(EvaluationError::ArgumentTypeMismatch),
-                    }
-                })
-            })
-        }
+        "zero?" => unitary_int_op(args, state, |x| LispValue::Truth(x == 0)),
+        "add1" => unitary_int_op(args, state, |x| LispValue::Integer(x + 1)),
+        // TODO: handle case where x == 0 more gracefully, i.e., return an EvalError
+        "sub1" => unitary_int_op(args, state, |x| LispValue::Integer(x - 1)),
         "+" => {
             save_args(args, 2).and_then(|arg_vec| {
                 evaluate_lisp_expr(arg_vec[0], state).and_then(|lhs| {
