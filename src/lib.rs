@@ -207,13 +207,16 @@ pub fn evaluate_lisp_expr(
     }
 }
 
-fn get_binary_args<'a, I>(mut args: I) -> Result<(&'a LispExpr, &'a LispExpr), EvaluationError>
+fn save_args<'a, I>(args: I, expected_count: usize) -> Result<Vec<&'a LispExpr>, EvaluationError>
 where
     I: Iterator<Item = &'a LispExpr>,
 {
-    match (args.next(), args.next(), args.next()) {
-        (Some(lhs), Some(rhs), None) => Ok((lhs, rhs)),
-        _ => Err(EvaluationError::ArgumentCountMismatch),
+    let arg_vec = args.collect::<Vec<_>>();
+
+    if arg_vec.len() == expected_count {
+        Ok(arg_vec)
+    } else {
+        Err(EvaluationError::ArgumentCountMismatch)
     }
 }
 
@@ -227,10 +230,31 @@ where
     I: Iterator<Item = &'a LispExpr>,
 {
     Some(match fn_name {
+        "cond" => {
+            save_args(args, 3).and_then(|arg_vec| if let Ok(LispValue::Truth(use_first)) =
+                evaluate_lisp_expr(arg_vec[0], state)
+            {
+                let arg_index = if use_first { 1 } else { 2 };
+
+                evaluate_lisp_expr(arg_vec[arg_index], state)
+            } else {
+                Err(EvaluationError::ArgumentTypeMismatch)
+            })
+        }
+        "zero?" => {
+            save_args(args, 1).and_then(|arg_vec| {
+                evaluate_lisp_expr(arg_vec[0], state).and_then(|val| {
+                    match val {
+                        LispValue::Integer(i) => Ok(LispValue::Truth(i == 0)),
+                        _ => Err(EvaluationError::ArgumentTypeMismatch),
+                    }
+                })
+            })
+        }
         "+" => {
-            get_binary_args(args).and_then(|(left, right)| {
-                evaluate_lisp_expr(left, state).and_then(|lhs| {
-                    evaluate_lisp_expr(right, state).and_then(|rhs| match (lhs, rhs) {
+            save_args(args, 2).and_then(|arg_vec| {
+                evaluate_lisp_expr(arg_vec[0], state).and_then(|lhs| {
+                    evaluate_lisp_expr(arg_vec[1], state).and_then(|rhs| match (lhs, rhs) {
                         (LispValue::Integer(x), LispValue::Integer(y)) => {
                             Ok(LispValue::Integer(x + y))
                         }
@@ -240,9 +264,9 @@ where
             })
         }
         "define" => {
-            get_binary_args(args).and_then(|(left, right)| {
-                evaluate_lisp_expr(right, state).and_then(|val| {
-                    if let &LispExpr::OpVar(ref var_name) = left {
+            save_args(args, 2).and_then(|arg_vec| {
+                evaluate_lisp_expr(arg_vec[1], state).and_then(|val| {
+                    if let &LispExpr::OpVar(ref var_name) = arg_vec[0] {
                         state.set_variable(var_name, val.clone());
                         Ok(val)
                     } else {
@@ -253,8 +277,8 @@ where
             })
         }
         "defun" => {
-            get_binary_args(args).and_then(|(head, body)| {
-                match (head, body) {
+            save_args(args, 2).and_then(|arg_vec| {
+                match (arg_vec[0], arg_vec[1]) {
                     (&LispExpr::SubExpr(ref head_list), &LispExpr::SubExpr(_))
                         if !head_list.is_empty() => {
                         let names_vec: Option<Vec<String>> = head_list
@@ -267,7 +291,7 @@ where
 
                         if let Some(mut names) = names_vec {
                             let func_name = names.remove(0);
-                            state.add_function(func_name, names, body.clone());
+                            state.add_function(func_name, names, arg_vec[1].clone());
                             // Return some dummy value.
                             Ok(LispValue::Integer(0))
                         } else {
