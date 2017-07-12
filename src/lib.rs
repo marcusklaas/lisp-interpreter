@@ -1,3 +1,5 @@
+#![feature(slice_patterns)]
+
 use std::str::Chars;
 use std::iter::Peekable;
 use std::collections::HashMap;
@@ -163,11 +165,11 @@ impl fmt::Display for LispValue {
 
                     write!(f, "{}", val)?;
                 }
-                
+
                 write!(f, ")")
             }
         }
-        
+
     }
 }
 
@@ -178,7 +180,7 @@ pub fn evaluate_lisp_expr(
     match *expr {
         LispExpr::Integer(n) => Ok(LispValue::Integer(n)),
         LispExpr::SubExpr(ref expr_vec) => {
-            if let LispExpr::OpVar(ref name) = expr_vec[0] {
+            if let [LispExpr::OpVar(ref name), _..] = expr_vec[..] {
                 // First OpVar could be a function, but also a variable.
                 if let Some(res) = evaluate_lisp_fn(name, expr_vec[1..].iter(), state) {
                     return res;
@@ -541,5 +543,10 @@ mod tests {
         let result = run_lisp_with_state(lit, &mut state);
 
         assert_eq!(expected, result);
+    }
+
+    #[test]
+    fn eval_empty_list() {
+        assert_eq!("()", run_lisp("()").unwrap().to_string());
     }
 }
