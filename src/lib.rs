@@ -80,24 +80,33 @@ mod tests {
         }
     }
 
-    fn run_lisp_with_state(lit: &str, state: &mut State) -> Result<LispValue, LispError> {
-        Ok(evaluate_lisp_expr(&parse_lisp_string(lit)?, state)?)
-    }
-
-    fn run_lisp(lit: &str) -> Result<LispValue, LispError> {
-        run_lisp_with_state(lit, &mut State::new())
-    }
-
-    fn check_lisp_ok<'i, I>(commands: I, expected_out: &str) where I: IntoIterator<Item = &'i str> {
+    fn check_lisp<'i, I>(commands: I) -> Result<LispValue, LispError>
+    where
+        I: IntoIterator<Item = &'i str>,
+    {
         let mut state = State::new();
         let mut last_ret_val = None;
 
         for cmd in commands {
-            let expr = parse_lisp_string(cmd).unwrap();
-            last_ret_val = Some(evaluate_lisp_expr(&expr, &mut state).unwrap());
+            let expr = parse_lisp_string(cmd)?;
+            last_ret_val = Some(evaluate_lisp_expr(&expr, &mut state)?);
         }
 
-        assert_eq!(expected_out, last_ret_val.unwrap().to_string());
+        Ok(last_ret_val.unwrap())
+    }
+
+    fn check_lisp_ok<'i, I>(commands: I, expected_out: &str)
+    where
+        I: IntoIterator<Item = &'i str>,
+    {
+        assert_eq!(expected_out, check_lisp(commands).unwrap().to_string());
+    }
+
+    fn check_lisp_err<'i, I>(commands: I, expected_err: LispError)
+    where
+        I: IntoIterator<Item = &'i str>,
+    {
+        assert_eq!(expected_err, check_lisp(commands).unwrap_err());
     }
 
     // TODO: add tests for function definition and evaluation.
@@ -126,42 +135,34 @@ mod tests {
 
     #[test]
     fn too_few_arguments() {
-        let lit = "(+ 10)";
-        let expected = Err(LispError::Evaluation(
-            EvaluationError::ArgumentCountMismatch,
-        ));
-        let result = run_lisp(lit);
-
-        assert_eq!(expected, result);
+        check_lisp_err(
+            vec!["(+ 10)"],
+            LispError::Evaluation(EvaluationError::ArgumentCountMismatch),
+        );
     }
 
     #[test]
     fn too_many_arguments() {
-        let lit = "(+ 0 3 5)";
-        let expected = Err(LispError::Evaluation(
-            EvaluationError::ArgumentCountMismatch,
-        ));
-        let result = run_lisp(lit);
-
-        assert_eq!(expected, result);
+        check_lisp_err(
+            vec!["(+ 0 3 5)"],
+            LispError::Evaluation(EvaluationError::ArgumentCountMismatch),
+        );
     }
 
     #[test]
     fn unexpected_operator() {
-        let lit = "(10 + 3)";
-        let expected = Err(LispError::Evaluation(EvaluationError::UnknownVariable));
-        let result = run_lisp(lit);
-
-        assert_eq!(expected, result);
+        check_lisp_err(
+            vec!["(10 + 3)"],
+            LispError::Evaluation(EvaluationError::UnknownVariable),
+        );
     }
 
     #[test]
     fn undefined_function() {
-        let lit = "(first (10 3))";
-        let expected = Err(LispError::Evaluation(EvaluationError::UnknownVariable));
-        let result = run_lisp(lit);
-
-        assert_eq!(expected, result);
+        check_lisp_err(
+            vec!["(first (10 3))"],
+            LispError::Evaluation(EvaluationError::UnknownVariable),
+        );
     }
 
     #[test]
