@@ -1,7 +1,8 @@
 extern crate yalp;
 extern crate rustyline;
 
-use yalp::{evaluate_lisp_expr, parse_lisp_string, State};
+use yalp::eval::{evaluate_lisp_expr, State};
+use yalp::parse::parse_lisp_string;
 
 fn main() {
     let mut rl = rustyline::Editor::<()>::new();
