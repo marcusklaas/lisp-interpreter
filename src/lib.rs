@@ -28,7 +28,14 @@ pub struct State {
 
 impl State {
     pub fn new() -> State {
-        State { bound: HashMap::new() }
+        State {
+            bound: [("#t", true), ("#f", false)]
+                .into_iter()
+                .map(|&(var_name, val)| {
+                    (var_name.into(), NameBinding::Value(LispValue::Truth(val)))
+                })
+                .collect(),
+        }
     }
 
     fn add_function(&mut self, name: String, args: Vec<String>, body: LispExpr) {
@@ -147,6 +154,7 @@ pub enum EvaluationError {
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum LispValue {
+    Truth(bool),
     Integer(u64),
     SubValue(Vec<LispValue>),
 }
@@ -155,6 +163,8 @@ impl fmt::Display for LispValue {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             &LispValue::Integer(i) => write!(f, "{}", i),
+            &LispValue::Truth(true) => write!(f, "#t"),
+            &LispValue::Truth(false) => write!(f, "#f"),
             &LispValue::SubValue(ref vec) => {
                 write!(f, "(")?;
 
