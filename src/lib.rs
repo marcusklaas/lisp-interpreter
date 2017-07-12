@@ -2,16 +2,23 @@ use std::str::Chars;
 use std::iter::Peekable;
 use std::collections::HashMap;
 
+#[derive(Debug, Clone)]
 struct LispFunc {
-    vars: Vec<String>,
-    expr: LispExpr,
+    args: Vec<String>,
+    body: LispExpr,
 }
 
+// So, at this point. Value bindings (or variables) are basically no
+// different than function definitions without any additional arguments.
+// We may want to get rid of the distinction at some point.
+
+#[derive(Debug, Clone)]
 enum NameBinding {
     Value(LispValue),
     Function(LispFunc),
 }
 
+#[derive(Debug, Clone)]
 pub struct State {
     bound: HashMap<String, NameBinding>,
 }
@@ -19,6 +26,11 @@ pub struct State {
 impl State {
     pub fn new() -> State {
         State { bound: HashMap::new() }
+    }
+
+    fn add_function(&mut self, name: String, args: Vec<String>, body: LispExpr) {
+        let func = LispFunc { args, body };
+        self.bound.insert(name, NameBinding::Function(func));
     }
 
     fn get_function(&self, name: &str) -> Option<&LispFunc> {
@@ -41,7 +53,7 @@ impl State {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LispExpr {
     Integer(u64),
     OpVar(String),
@@ -127,6 +139,7 @@ pub enum EvaluationError {
     ArgumentCountMismatch,
     ArgumentTypeMismatch,
     UnknownVariable,
+    MalformedDefinition,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -172,7 +185,7 @@ where
 // Returns `None` when the function is not defined, `Some(Result<..>)` when it is.
 fn evaluate_lisp_fn<'a, I>(
     fn_name: &str,
-    mut args: I,
+    args: I,
     state: &mut State,
 ) -> Option<Result<LispValue, EvaluationError>>
 where
@@ -204,7 +217,62 @@ where
                 })
             })
         }
-        _ => return None,
+        "defun" => {
+            get_binary_args(args).and_then(|(head, body)| {
+                match (head, body) {
+                    (&LispExpr::SubExpr(ref head_list), &LispExpr::SubExpr(_))
+                        if !head_list.is_empty() => {
+                        let names_vec: Option<Vec<String>> = head_list
+                            .into_iter()
+                            .map(|expr| match expr {
+                                &LispExpr::OpVar(ref name) => Some(name.clone()),
+                                _ => None,
+                            })
+                            .collect();
+
+                        if let Some(mut names) = names_vec {
+                            let func_name = names.remove(0);
+                            state.add_function(func_name, names, body.clone());
+                            // Return some dummy value.
+                            Ok(LispValue::Integer(0))
+                        } else {
+                            Err(EvaluationError::MalformedDefinition)
+                        }
+                    }
+                    (_, _) => Err(EvaluationError::MalformedDefinition),
+                }
+            })
+        }
+        custom_name => {
+            // Function bodies now have access to the entire state,
+            // which includes variables defined outside function scope.
+            // should This is probably not something we want to allow.
+            // We either create a clean state (with access to global
+            // functions?) or check that this doesn't happen at function
+            // definition.
+            return state.get_function(custom_name).map(|func| {
+                let mut new_state = state.clone();
+                // step 1: evaluate all arguments to LispValues.
+                let argument_res: Result<Vec<_>, _> = args.map(
+                    |x| evaluate_lisp_expr(x, &mut new_state),
+                ).collect();
+
+                argument_res.and_then(|argument_vec| {
+                    // step 2: check that number of variables matches.
+                    if argument_vec.len() != func.args.len() {
+                        return Err(EvaluationError::ArgumentCountMismatch);
+                    }
+
+                    // step 3: map arguments to their names and add them to the State.
+                    for (arg_name, arg_value) in func.args.iter().zip(argument_vec.into_iter()) {
+                        new_state.set_variable(arg_name, arg_value);
+                    }
+
+                    // step 4: evaluate function body.
+                    evaluate_lisp_expr(&func.body, &mut new_state)
+                })
+            });
+        }
     })
 }
 
@@ -270,6 +338,8 @@ mod tests {
     fn run_lisp(lit: &str) -> Result<LispValue, LispError> {
         run_lisp_with_state(lit, &mut State::new())
     }
+
+    // TODO: add tests for function definition and evaluation.
 
     #[test]
     fn parse_double_parens() {

@@ -8,15 +8,16 @@ fn main() {
     let mut state = State::new();
 
     loop {
-        let readline = rl.readline("> ");
-        match readline {
-            Ok(line) => {
-                if line == "quit" {
-                    break;
-                }
-                rl.add_history_entry(&line);
+        match rl.readline("> ") {
+            Ok(ref line) if line == ":quit" => break,
+            Ok(ref line) if line == ":state" => {
+                println!("{:?}", &state);
+                rl.add_history_entry(line);
+            }
+            Ok(ref line) => {
+                rl.add_history_entry(line);
 
-                let parse_result = parse_lisp_string(&line);
+                let parse_result = parse_lisp_string(line);
                 println!("Parse result: {:?}", parse_result);
 
                 if let Ok(ref expr) = parse_result {
