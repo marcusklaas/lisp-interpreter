@@ -18,11 +18,17 @@ fn main() {
                 rl.add_history_entry(line);
 
                 let parse_result = parse_lisp_string(line);
-                println!("Parse result: {:?}", parse_result);
 
-                if let Ok(ref expr) = parse_result {
-                    let eval = evaluate_lisp_expr(expr, &mut state);
-                    println!("Evaluation result: {:?}", eval);
+                match parse_result {
+                    Ok(ref expr) => {
+                        match evaluate_lisp_expr(expr, &mut state) {
+                            Ok(val) => println!("{}", val),
+                            Err(eval_err) => println!("Evaluation error: {:?}", eval_err),
+                        }
+                    }
+                    Err(ref parse_err) => {
+                        println!("Parse error: {:?}", parse_err);
+                    }
                 }
             }
             Err(..) => {

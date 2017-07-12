@@ -1,6 +1,7 @@
 use std::str::Chars;
 use std::iter::Peekable;
 use std::collections::HashMap;
+use std::fmt;
 
 #[derive(Debug, Clone)]
 struct LispFunc {
@@ -146,6 +147,28 @@ pub enum EvaluationError {
 pub enum LispValue {
     Integer(u64),
     SubValue(Vec<LispValue>),
+}
+
+impl fmt::Display for LispValue {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            &LispValue::Integer(i) => write!(f, "{}", i),
+            &LispValue::SubValue(ref vec) => {
+                write!(f, "(")?;
+
+                for (idx, val) in vec.iter().enumerate() {
+                    if idx > 0 {
+                        write!(f, " ")?;
+                    }
+
+                    write!(f, "{}", val)?;
+                }
+                
+                write!(f, ")")
+            }
+        }
+        
+    }
 }
 
 pub fn evaluate_lisp_expr(
@@ -342,6 +365,18 @@ mod tests {
     // TODO: add tests for function definition and evaluation.
 
     #[test]
+    fn display_int_val() {
+        let val = LispValue::Integer(5);
+        assert_eq!("5", val.to_string());
+    }
+
+    #[test]
+    fn display_list_val() {
+        let val = LispValue::SubValue(vec![LispValue::Integer(1), LispValue::SubValue(vec![])]);
+        assert_eq!("(1 ())", val.to_string());
+    }
+
+    #[test]
     fn parse_double_parens() {
         let lit = "(())";
         let expected = Ok(LispExpr::SubExpr(vec![LispExpr::SubExpr(vec![])]));
@@ -481,7 +516,7 @@ mod tests {
     fn test_variable_setting() {
         let mut state = State::new();
         let lit = "(define x 5)";
-        run_lisp_with_state(lit, &mut state);
+        run_lisp_with_state(lit, &mut state).unwrap();
 
         let lit = "(+ x 7)";
         let expected = Ok(LispValue::Integer(12));
