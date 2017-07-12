@@ -148,6 +148,7 @@ pub enum EvaluationError {
     UnexpectedOperator,
     ArgumentCountMismatch,
     ArgumentTypeMismatch,
+    SubZero,
     UnknownVariable,
     MalformedDefinition,
 }
@@ -223,11 +224,11 @@ where
 fn unitary_int_op<'a, I, F>(args: I, state: &mut State, f: F) -> Result<LispValue, EvaluationError>
 where
     I: Iterator<Item = &'a LispExpr>,
-    F: Fn(u64) -> LispValue,
+    F: Fn(u64) -> Result<LispValue, EvaluationError>,
 {
     save_args(args, 1).and_then(|arg_vec| {
         evaluate_lisp_expr(arg_vec[0], state).and_then(|val| match val {
-            LispValue::Integer(i) => Ok(f(i)),
+            LispValue::Integer(i) => f(i),
             _ => Err(EvaluationError::ArgumentTypeMismatch),
         })
     })
@@ -244,20 +245,25 @@ where
 {
     Some(match fn_name {
         "cond" => {
-            save_args(args, 3).and_then(|arg_vec| if let Ok(LispValue::Truth(use_first)) =
-                evaluate_lisp_expr(arg_vec[0], state)
-            {
-                let arg_index = if use_first { 1 } else { 2 };
+            save_args(args, 3).and_then(|arg_vec| {
+                evaluate_lisp_expr(arg_vec[0], state).and_then(|cond_res| match cond_res {
+                    LispValue::Truth(use_first) => {
+                        let arg_index = if use_first { 1 } else { 2 };
 
-                evaluate_lisp_expr(arg_vec[arg_index], state)
-            } else {
-                Err(EvaluationError::ArgumentTypeMismatch)
+                        evaluate_lisp_expr(arg_vec[arg_index], state)
+                    }
+                    _ => Err(EvaluationError::ArgumentTypeMismatch),
+                })
             })
         }
-        "zero?" => unitary_int_op(args, state, |x| LispValue::Truth(x == 0)),
-        "add1" => unitary_int_op(args, state, |x| LispValue::Integer(x + 1)),
-        // TODO: handle case where x == 0 more gracefully, i.e., return an EvalError
-        "sub1" => unitary_int_op(args, state, |x| LispValue::Integer(x - 1)),
+        "zero?" => unitary_int_op(args, state, |x| Ok(LispValue::Truth(x == 0))),
+        "add1" => unitary_int_op(args, state, |x| Ok(LispValue::Integer(x + 1))),
+        "sub1" => {
+            unitary_int_op(args, state, |x| match x {
+                0 => Err(EvaluationError::SubZero),
+                i => Ok(LispValue::Integer(i - 1)),
+            })
+        }
         "+" => {
             save_args(args, 2).and_then(|arg_vec| {
                 evaluate_lisp_expr(arg_vec[0], state).and_then(|lhs| {
