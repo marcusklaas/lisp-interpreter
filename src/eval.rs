@@ -67,9 +67,9 @@ pub fn evaluate_lisp_expr(
     match *expr {
         LispExpr::Integer(n) => Ok(LispValue::Integer(n)),
         LispExpr::SubExpr(ref expr_vec) => {
-            if let [LispExpr::OpVar(ref name), _..] = expr_vec[..] {
+            if let [LispExpr::OpVar(ref name), ref tail..] = expr_vec[..] {
                 // First OpVar could be a function, but also a variable.
-                if let Some(res) = evaluate_lisp_fn(name, expr_vec[1..].iter(), state) {
+                if let Some(res) = evaluate_lisp_fn(name, tail.iter(), state) {
                     return res;
                 }
             }

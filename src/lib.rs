@@ -1,4 +1,5 @@
 #![feature(slice_patterns)]
+#![feature(advanced_slice_patterns)]
 
 use std::fmt;
 
@@ -109,8 +110,6 @@ mod tests {
         assert_eq!(expected_err, check_lisp(commands).unwrap_err());
     }
 
-    // TODO: add tests for function definition and evaluation.
-
     #[test]
     fn display_int_val() {
         let val = LispValue::Integer(5);
@@ -121,6 +120,70 @@ mod tests {
     fn display_list_val() {
         let val = LispValue::SubValue(vec![LispValue::Integer(1), LispValue::SubValue(vec![])]);
         assert_eq!("(1 ())", val.to_string());
+    }
+
+    #[test]
+    fn function_add() {
+        check_lisp_ok(
+            vec![
+                "(defun (add x y) (cond (zero? y) x (add (add1 x) (sub1 y))))",
+                "(add 77 12)",
+            ],
+            "89",
+        );
+    }
+
+    #[test]
+    fn function_multiply() {
+        check_lisp_ok(
+            vec![
+                "(defun (add x y) (cond (zero? y) x (add (add1 x) (sub1 y))))",
+                "(defun (mult x y) (cond (zero? y) 0 (add x (mult x (sub1 y)))))",
+                "(mult 7 3)",
+            ],
+            "21",
+        );
+    }
+
+    #[test]
+    fn function_def() {
+        check_lisp_ok(vec!["(defun (add2 x) (add1 (add1 x)))", "(add2 5)"], "7");
+    }
+
+    #[test]
+    fn is_null_empty_list() {
+        check_lisp_ok(vec!["(null? ())"], "#t");
+    }
+
+    #[test]
+    fn cdr() {
+        check_lisp_ok(vec!["(cdr (1 2 3 4))"], "(2 3 4)");
+    }
+
+    #[test]
+    fn is_zero_of_zero() {
+        check_lisp_ok(vec!["(zero? 0)"], "#t");
+    }
+
+    #[test]
+    fn is_zero_of_nonzero() {
+        check_lisp_ok(vec!["(zero? 5)"], "#f");
+    }
+
+    #[test]
+    fn is_zero_of_list() {
+        check_lisp_err(
+            vec!["(zero? (0))"],
+            LispError::Evaluation(EvaluationError::ArgumentTypeMismatch),
+        );
+    }
+
+    #[test]
+    fn is_zero_two_args() {
+        check_lisp_err(
+            vec!["(zero? 0 0)"],
+            LispError::Evaluation(EvaluationError::ArgumentCountMismatch),
+        );
     }
 
     #[test]
