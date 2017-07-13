@@ -133,7 +133,7 @@ mod tests {
     fn function_add() {
         check_lisp_ok(
             vec![
-                "(defun (add x y) (cond (zero? y) x (add (add1 x) (sub1 y))))",
+                "(define add (lambda (x y) (cond (zero? y) x (add (add1 x) (sub1 y)))))",
                 "(add 77 12)",
             ],
             "89",
@@ -144,8 +144,8 @@ mod tests {
     fn function_multiply() {
         check_lisp_ok(
             vec![
-                "(defun (add x y) (cond (zero? y) x (add (add1 x) (sub1 y))))",
-                "(defun (mult x y) (cond (zero? y) 0 (add x (mult x (sub1 y)))))",
+                "(define add (lambda (x y) (cond (zero? y) x (add (add1 x) (sub1 y)))))",
+                "(define mult (lambda (x y) (cond (zero? y) 0 (add x (mult x (sub1 y))))))",
                 "(mult 7 3)",
             ],
             "21",
@@ -154,7 +154,10 @@ mod tests {
 
     #[test]
     fn function_def() {
-        check_lisp_ok(vec!["(defun (add2 x) (add1 (add1 x)))", "(add2 5)"], "7");
+        check_lisp_ok(
+            vec!["(define add2 (lambda (x) (add1 (add1 x))))", "(add2 5)"],
+            "7",
+        );
     }
 
     #[test]
@@ -194,19 +197,9 @@ mod tests {
     }
 
     #[test]
-    fn run_simple_lisp_addition() {
-        check_lisp_ok(vec!["(3 (+ 1 3) 0)"], "(3 4 0)");
-    }
-
-    #[test]
-    fn run_nested_evaluation() {
-        check_lisp_ok(vec!["(+ 10 (+ 1 10))"], "21");
-    }
-
-    #[test]
     fn too_few_arguments() {
         check_lisp_err(
-            vec!["(+ 10)"],
+            vec!["(add1)"],
             LispError::Evaluation(EvaluationError::ArgumentCountMismatch),
         );
     }
@@ -214,7 +207,7 @@ mod tests {
     #[test]
     fn too_many_arguments() {
         check_lisp_err(
-            vec!["(+ 0 3 5)"],
+            vec!["(lambda f (x) (add1 x) ())"],
             LispError::Evaluation(EvaluationError::ArgumentCountMismatch),
         );
     }
@@ -236,13 +229,15 @@ mod tests {
     }
 
     #[test]
-    fn test_variable() {
-        check_lisp_ok(vec!["(define x 5000)", "(+ x x)"], "10000");
-    }
-
-    #[test]
     fn test_variable_list() {
-        check_lisp_ok(vec!["(define x 3)", "(x 1 (+ 1 x) 5)"], "(3 1 4 5)");
+        check_lisp_ok(
+            vec![
+                "(define x 3)",
+                "(define + (lambda (x y) (cond (zero? y) x (+ (add1 x) (sub1 y)))))",
+                "(x 1 (+ 1 x) 5)",
+            ],
+            "(3 1 4 5)",
+        );
     }
 
     #[test]
@@ -254,10 +249,23 @@ mod tests {
     fn map() {
         check_lisp_ok(
             vec![
-                "(defun (map f xs) (cond (null? xs) () (cons (f (car xs)) (map f (cdr xs)))))",
+                "(define map (lambda (f xs) (cond (null? xs) () (cons (f (car xs)) (map f (cdr xs))))))",
                 "(map add1 (1 2 3))",
             ],
             "(2 3 4)",
+        );
+    }
+
+    #[test]
+    fn lambda() {
+        check_lisp_ok(
+            vec![
+                "(define add (lambda (x y) (cond (zero? y) x (add (add1 x) (sub1 y)))))",
+                "(define mult (lambda (x y) (cond (zero? y) 0 (add x (mult x (sub1 y))))))",
+                "(define map (lambda (f xs) (cond (null? xs) () (cons (f (car xs)) (map f (cdr xs))))))",
+                "(map (lambda (x) (mult x x)) (1 2 3))",
+            ],
+            "(1 4 9)",
         );
     }
 }

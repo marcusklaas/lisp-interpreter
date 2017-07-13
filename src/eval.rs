@@ -21,11 +21,6 @@ impl State {
         }
     }
 
-    fn add_function(&mut self, name: String, args: Vec<String>, body: LispExpr) {
-        let func = LispValue::Function(LispFunc::Custom { args, body });
-        self.bound.insert(name, func);
-    }
-
     fn get_variable_value(&self, var_name: &str) -> LispValue {
         match self.bound.get(var_name) {
             Some(val) => val.clone(),
@@ -183,18 +178,6 @@ where
                         i => Ok(LispValue::Integer(i - 1)),
                     })
                 }
-                "+" => {
-                    save_args(args, 2).and_then(|arg_vec| {
-                        evaluate_lisp_expr(arg_vec[0], state).and_then(|lhs| {
-                            evaluate_lisp_expr(arg_vec[1], state).and_then(|rhs| match (lhs, rhs) {
-                                (LispValue::Integer(x), LispValue::Integer(y)) => {
-                                    Ok(LispValue::Integer(x + y))
-                                }
-                                _ => Err(EvaluationError::ArgumentTypeMismatch),
-                            })
-                        })
-                    })
-                }
                 "define" => {
                     save_args(args, 2).and_then(|arg_vec| {
                         evaluate_lisp_expr(arg_vec[1], state).and_then(|val| {
@@ -207,30 +190,24 @@ where
                         })
                     })
                 }
-                "defun" => {
-                    save_args(args, 2).and_then(|arg_vec| {
-                        match (arg_vec[0], arg_vec[1]) {
-                            (&LispExpr::SubExpr(ref head_list), &LispExpr::SubExpr(_))
-                                if !head_list.is_empty() => {
-                                let names_vec: Option<Vec<String>> = head_list
-                                    .into_iter()
-                                    .map(|expr| match expr {
-                                        &LispExpr::OpVar(ref name) => Some(name.clone()),
-                                        _ => None,
+                "lambda" => {
+                    save_args(args, 2).and_then(|arg_vec| match (arg_vec[0], arg_vec[1]) {
+                        (&LispExpr::SubExpr(ref head_list), &LispExpr::SubExpr(_)) => {
+                            head_list
+                                .into_iter()
+                                .map(|expr| match expr {
+                                    &LispExpr::OpVar(ref name) => Ok(name.clone()),
+                                    _ => Err(EvaluationError::MalformedDefinition),
+                                })
+                                .collect::<Result<Vec<_>, _>>()
+                                .map(|names| {
+                                    LispValue::Function(LispFunc::Custom {
+                                        args: names,
+                                        body: arg_vec[1].clone(),
                                     })
-                                    .collect();
-
-                                if let Some(mut names) = names_vec {
-                                    let func_name = names.remove(0);
-                                    state.add_function(func_name, names, arg_vec[1].clone());
-                                    // Return some dummy value.
-                                    Ok(LispValue::Integer(0))
-                                } else {
-                                    Err(EvaluationError::MalformedDefinition)
-                                }
-                            }
-                            (_, _) => Err(EvaluationError::MalformedDefinition),
+                                })
                         }
+                        (_, _) => Err(EvaluationError::MalformedDefinition),
                     })
                 }
                 _ => Err(EvaluationError::UnknownVariable(fn_name.clone())),
