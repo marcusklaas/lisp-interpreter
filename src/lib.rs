@@ -33,6 +33,7 @@ pub enum EvaluationError {
     UnexpectedOperator,
     ArgumentCountMismatch,
     ArgumentTypeMismatch,
+    NonFunctionApplication,
     SubZero,
     EmptyList,
     UnknownVariable(String),
@@ -171,7 +172,7 @@ mod tests {
 
     #[test]
     fn is_null_empty_list() {
-        check_lisp_ok(vec!["(null? ())"], "#t");
+        check_lisp_ok(vec!["(null? (list))"], "#t");
     }
 
     // #[test]
@@ -192,7 +193,7 @@ mod tests {
     #[test]
     fn is_zero_of_list() {
         check_lisp_err(
-            vec!["(zero? (0))"],
+            vec!["(zero? (list 0))"],
             LispError::Evaluation(EvaluationError::ArgumentTypeMismatch),
         );
     }
@@ -243,7 +244,7 @@ mod tests {
             vec![
                 "(define x 3)",
                 "(define + (lambda (x y) (cond (zero? y) x (+ (add1 x) (sub1 y)))))",
-                "(x 1 (+ 1 x) 5)",
+                "(list x 1 (+ 1 x) 5)",
             ],
             "(3 1 4 5)",
         );
@@ -251,15 +252,15 @@ mod tests {
 
     #[test]
     fn eval_empty_list() {
-        check_lisp_ok(vec!["()"], "()");
+        check_lisp_ok(vec!["(list)"], "()");
     }
 
     #[test]
     fn map() {
         check_lisp_ok(
             vec![
-                "(define map (lambda (f xs) (cond (null? xs) () (cons (f (car xs)) (map f (cdr xs))))))",
-                "(map add1 (1 2 3))",
+                "(define map (lambda (f xs) (cond (null? xs) (list) (cons (f (car xs)) (map f (cdr xs))))))",
+                "(map add1 (list 1 2 3))",
             ],
             "(2 3 4)",
         );
@@ -271,8 +272,8 @@ mod tests {
             vec![
                 "(define add (lambda (x y) (cond (zero? y) x (add (add1 x) (sub1 y)))))",
                 "(define mult (lambda (x y) (cond (zero? y) 0 (add x (mult x (sub1 y))))))",
-                "(define map (lambda (f xs) (cond (null? xs) () (cons (f (car xs)) (map f (cdr xs))))))",
-                "(map (lambda (x) (mult x x)) (1 2 3))",
+                "(define map (lambda (f xs) (cond (null? xs) (list) (cons (f (car xs)) (map f (cdr xs))))))",
+                "(map (lambda (x) (mult x x)) (list 1 2 3))",
             ],
             "(1 4 9)",
         );

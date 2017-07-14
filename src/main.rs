@@ -8,7 +8,6 @@ const PRELUDE: &'static [&'static str] = &[
     "(define add (lambda (x y) (cond (zero? y) x (add (add1 x) (sub1 y)))))",
     "(define mult (lambda (x y) (cond (zero? y) 0 (add x (mult x (sub1 y))))))",
     "(define map (lambda (f xs) (cond (null? xs) () (cons (f (car xs)) (map f (cdr xs))))))",
-    "(map (lambda (x) (mult x x)) (1 2 3))",
 ];
 
 fn main() {
@@ -35,7 +34,10 @@ fn main() {
                 match parse_result {
                     Ok(ref expr) => {
                         match evaluate_lisp_expr(expr, &mut state) {
-                            Ok(val) => println!("{}", val),
+                            Ok(val) => {
+                                println!("{}", &val);
+                                state.set_variable(":last", val);
+                            }
                             Err(eval_err) => println!("Evaluation error: {:?}", eval_err),
                         }
                     }

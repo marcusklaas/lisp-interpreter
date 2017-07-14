@@ -43,28 +43,19 @@ pub fn evaluate_lisp_expr(
         LispExpr::Integer(n) => Ok(LispValue::Integer(n)),
         LispExpr::SubExpr(ref expr_vec) => {
             // step 1: evaluate the head
-            match expr_vec.split_first() {
-                Some((head, tail)) => {
+            match &expr_vec[..] {
+                &[ref head, ref tail..] => {
                     evaluate_lisp_expr(head, state).and_then(|head_val| match head_val {
                         // step 2: if it's a function value, eval that function with the
                         // remaining the expressions
                         LispValue::Function(f) => evaluate_lisp_fn(f, tail.into_iter(), state),
-
-                        // step 3: otherwise, evaluate all the other values
-                        other => {
-                            Some(Ok(other))
-                                .into_iter()
-                                .chain(tail.into_iter().map(|x| evaluate_lisp_expr(x, state)))
-                                .collect::<Result<Vec<_>, _>>()
-                                .map(|vec| LispValue::SubValue(vec))
-                        }
+                        _ => Err(EvaluationError::NonFunctionApplication),
                     })
                 }
                 // empty list
-                None => Ok(LispValue::SubValue(Vec::new())),
+                _ => Err(EvaluationError::NonFunctionApplication),
             }
         }
-        // FIXME: this now doesnt fail when a variable isn't known - allow?
         LispExpr::OpVar(ref x) => Ok(state.get_variable_value(x)),
     }
 }
@@ -124,6 +115,12 @@ where
     match f {
         LispFunc::BuiltIn(ref fn_name) => {
             match &fn_name[..] {
+                "list" => {
+                    Ok(LispValue::SubValue(
+                        args.map(|arg| evaluate_lisp_expr(arg, state))
+                            .collect::<Result<_, _>>()?,
+                    ))
+                }
                 "null?" => unitary_list_op(args, state, |vec| Ok(LispValue::Truth(vec.is_empty()))),
                 // So, usually cons prepends an element to a list, but since our internal
                 // representation is a Vec, we'll actually append it. We may want to hide
