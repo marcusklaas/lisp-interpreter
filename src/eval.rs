@@ -53,7 +53,7 @@ pub fn evaluate_lisp_expr(
                     })
                 }
                 // empty list
-                _ => Err(EvaluationError::NonFunctionApplication),
+                _ => Err(EvaluationError::EmptyListEvaluation),
             }
         }
         LispExpr::OpVar(ref x) => Ok(state.get_variable_value(x)),
@@ -199,6 +199,7 @@ where
                                 .collect::<Result<Vec<_>, _>>()
                                 .map(|names| {
                                     LispValue::Function(LispFunc::Custom {
+                                        state: state.clone(),
                                         args: names,
                                         body: arg_vec[1].clone(),
                                     })
@@ -211,32 +212,44 @@ where
             }
         }
         LispFunc::Custom {
+            state: mut closure,
             args: func_args,
             body,
         } => {
+            // FIXME: comment below is possibly out of date? Reread carefully
+            // at some point.
+
             // Function bodies now have access to the entire state,
             // which includes variables defined outside function scope.
             // should This is probably not something we should allow.
             // We either create a clean state (with access to global
             // functions?) or check that this doesn't happen at function
             // definition.
-            let mut new_state = state.clone();
+            //let mut new_state = state.clone();
+
             // step 1: evaluate all arguments to LispValues.
-            args.map(|x| evaluate_lisp_expr(x, &mut new_state))
+            args.map(|x| evaluate_lisp_expr(x, state))
                 .collect::<Result<Vec<_>, _>>()
-                .and_then(|argument_vec| {
+                .and_then(move |argument_vec| {
                     // step 2: check that number of variables matches.
                     if argument_vec.len() != func_args.len() {
                         return Err(EvaluationError::ArgumentCountMismatch);
                     }
 
+                    // let mut new_state = state.clone();
+
+                    // Set closure items
+                    for (arg_name, arg_value) in state.bound.iter() {
+                        closure.set_variable(arg_name, arg_value.clone());
+                    }
+
                     // step 3: map arguments to their names and add them to the State.
                     for (arg_name, arg_value) in func_args.iter().zip(argument_vec.into_iter()) {
-                        new_state.set_variable(arg_name, arg_value);
+                        closure.set_variable(arg_name, arg_value);
                     }
 
                     // step 4: evaluate function body.
-                    evaluate_lisp_expr(&body, &mut new_state)
+                    evaluate_lisp_expr(&body, &mut closure)
                 })
         }
     }

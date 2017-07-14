@@ -5,18 +5,23 @@ pub mod parse;
 pub mod eval;
 
 use std::fmt;
+use eval::State;
 
 #[derive(Debug, Clone)]
 pub enum LispFunc {
     BuiltIn(String),
-    Custom { args: Vec<String>, body: LispExpr },
+    Custom {
+        state: State,
+        args: Vec<String>,
+        body: LispExpr,
+    },
 }
 
 impl fmt::Display for LispFunc {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             &LispFunc::BuiltIn(ref name) => write!(f, "{}", name),
-            &LispFunc::Custom { ref args, ref body } => write!(f, "\\{:?} -> {:?}", args, body),
+            &LispFunc::Custom { ref args, ref body, .. } => write!(f, "\\{:?} -> {:?}", args, body),
         }
     }
 }
@@ -33,6 +38,7 @@ pub enum EvaluationError {
     UnexpectedOperator,
     ArgumentCountMismatch,
     ArgumentTypeMismatch,
+    EmptyListEvaluation,
     NonFunctionApplication,
     SubZero,
     EmptyList,
@@ -222,13 +228,13 @@ mod tests {
         );
     }
 
-    // #[test]
-    // fn unexpected_operator() {
-    //     check_lisp_err(
-    //         vec!["(10 + 3)"],
-    //         LispError::Evaluation(EvaluationError::UnknownVariable),
-    //     );
-    // }
+    #[test]
+    fn unexpected_operator() {
+        check_lisp_err(
+            vec!["(10 + 3)"],
+            LispError::Evaluation(EvaluationError::NonFunctionApplication),
+        );
+    }
 
     #[test]
     fn undefined_function() {
@@ -280,9 +286,14 @@ mod tests {
     }
 
     #[test]
-    fn map_maps() {
-        // (map (lambda (f) (f 10)) (map  (lambda (n) (lambda (x) (add x n)) ) (1 2 3 4 5 6 7 8 9 10)))
-        // should eval to
-        // (11 - 20)
+    fn closures() {
+        check_lisp_ok(
+            vec![
+                "(define add (lambda (x y) (cond (zero? y) x (add (add1 x) (sub1 y)))))",
+                "(define map (lambda (f xs) (cond (null? xs) (list) (cons (f (car xs)) (map f (cdr xs))))))",
+                "(map (lambda (f) (f 10)) (map (lambda (n) (lambda (x) (add x n))) (list 1 2 3 4 5 6 7 8 9 10)))",
+            ],
+            "(11 12 13 14 15 16 17 18 19 20)",
+        );
     }
 }
