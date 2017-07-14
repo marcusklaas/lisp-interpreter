@@ -12,6 +12,15 @@ pub enum LispFunc {
     Custom { args: Vec<String>, body: LispExpr },
 }
 
+impl fmt::Display for LispFunc {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            &LispFunc::BuiltIn(ref name) => write!(f, "{}", name),
+            &LispFunc::Custom { ref args, ref body } => write!(f, "\\{:?} -> {:?}", args, body),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LispExpr {
     Integer(u64),
@@ -41,7 +50,7 @@ pub enum LispValue {
 impl fmt::Display for LispValue {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            &LispValue::Function(_) => write!(f, "func"),
+            &LispValue::Function(ref func) => write!(f, "func[{}]", func),
             &LispValue::Integer(i) => write!(f, "{}", i),
             &LispValue::Truth(true) => write!(f, "#t"),
             &LispValue::Truth(false) => write!(f, "#f"),
@@ -267,5 +276,12 @@ mod tests {
             ],
             "(1 4 9)",
         );
+    }
+
+    #[test]
+    fn map_maps() {
+        // (map (lambda (f) (f 10)) (map  (lambda (n) (lambda (x) (add x n)) ) (1 2 3 4 5 6 7 8 9 10)))
+        // should eval to
+        // (11 - 20)
     }
 }

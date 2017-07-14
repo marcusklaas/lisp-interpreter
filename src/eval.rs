@@ -219,30 +219,28 @@ where
         } => {
             // Function bodies now have access to the entire state,
             // which includes variables defined outside function scope.
-            // should This is probably not something we want to allow.
+            // should This is probably not something we should allow.
             // We either create a clean state (with access to global
             // functions?) or check that this doesn't happen at function
             // definition.
             let mut new_state = state.clone();
             // step 1: evaluate all arguments to LispValues.
-            let argument_res: Result<Vec<_>, _> = args.map(
-                |x| evaluate_lisp_expr(x, &mut new_state),
-            ).collect();
+            args.map(|x| evaluate_lisp_expr(x, &mut new_state))
+                .collect::<Result<Vec<_>, _>>()
+                .and_then(|argument_vec| {
+                    // step 2: check that number of variables matches.
+                    if argument_vec.len() != func_args.len() {
+                        return Err(EvaluationError::ArgumentCountMismatch);
+                    }
 
-            argument_res.and_then(|argument_vec| {
-                // step 2: check that number of variables matches.
-                if argument_vec.len() != func_args.len() {
-                    return Err(EvaluationError::ArgumentCountMismatch);
-                }
+                    // step 3: map arguments to their names and add them to the State.
+                    for (arg_name, arg_value) in func_args.iter().zip(argument_vec.into_iter()) {
+                        new_state.set_variable(arg_name, arg_value);
+                    }
 
-                // step 3: map arguments to their names and add them to the State.
-                for (arg_name, arg_value) in func_args.iter().zip(argument_vec.into_iter()) {
-                    new_state.set_variable(arg_name, arg_value);
-                }
-
-                // step 4: evaluate function body.
-                evaluate_lisp_expr(&body, &mut new_state)
-            })
+                    // step 4: evaluate function body.
+                    evaluate_lisp_expr(&body, &mut new_state)
+                })
         }
     }
 }
