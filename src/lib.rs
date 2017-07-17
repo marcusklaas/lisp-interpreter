@@ -44,6 +44,7 @@ pub enum EvaluationError {
     EmptyList,
     UnknownVariable(String),
     MalformedDefinition,
+    TestOneTwoThree,
 }
 
 #[derive(Debug, Clone)]
