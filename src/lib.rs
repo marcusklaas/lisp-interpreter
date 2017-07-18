@@ -1,12 +1,15 @@
 #![feature(slice_patterns)]
 #![feature(advanced_slice_patterns)]
+#![feature(test)]
+
+extern crate test;
 
 pub mod parse;
-pub mod eval;
+//pub mod eval;
 pub mod evaluator;
 
 use std::fmt;
-use eval::State;
+use evaluator::State;
 
 #[derive(Debug, Clone)]
 pub enum LispFunc {
@@ -107,7 +110,7 @@ impl fmt::Display for LispValue {
 mod tests {
     use super::*;
     use super::parse::{ParseError, parse_lisp_string};
-    use super::eval::{State, evaluate_lisp_expr};
+    use super::evaluator::State;
     use std::convert::From;
 
     #[derive(Debug, PartialEq, Eq)]
@@ -263,7 +266,7 @@ mod tests {
     #[test]
     fn undefined_function() {
         check_lisp_err(
-            vec!["(first (10 3))"],
+            vec!["(first (list 10 3))"],
             LispError::Evaluation(EvaluationError::UnknownVariable("first".into())),
         );
     }
@@ -319,5 +322,15 @@ mod tests {
             ],
             "(11 12 13 14 15 16 17 18 19 20)",
         );
+    }
+
+    #[bench]
+    fn bench_add(b: &mut super::test::Bencher) {
+        b.iter(|| {
+            check_lisp(vec![
+                "(define add (lambda (x y) (cond (zero? y) x (add (add1 x) (sub1 y)))))",
+                "(add 100 100)",
+            ])
+        });
     }
 }

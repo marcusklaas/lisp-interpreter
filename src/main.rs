@@ -1,7 +1,7 @@
 extern crate yalp;
 extern crate rustyline;
 
-use yalp::eval::{evaluate_lisp_expr, State};
+use yalp::evaluator::State;
 use yalp::parse::parse_lisp_string;
 
 const PRELUDE: &'static [&'static str] = &[
@@ -22,7 +22,9 @@ fn main() {
 
     for def in PRELUDE {
         let parse_res = parse_lisp_string(def).expect("Prelude statement failed to parse!");
-        evaluate_lisp_expr(&parse_res, &mut state).expect("Prelude statement failed to execute!");
+        yalp::evaluator::eval(&parse_res, &mut state).expect(
+            "Prelude statement failed to execute!",
+        );
     }
 
     loop {
