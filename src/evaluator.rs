@@ -1,7 +1,7 @@
 use super::*;
 use std::collections::HashMap;
 
-// FIXME: this should not have the PartialEq/ Eq traits 
+// FIXME: this should not have the PartialEq/ Eq traits
 // remove it once LispFunc no longer contains a State
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct State {
@@ -171,13 +171,13 @@ pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue,
                                             match arg_list {
                                                 LispExpr::SubExpr(arg_vec) => {
                                                     let f = LispFunc::Custom {
-                                                    state: state.clone(),
-                                                    args: arg_vec.into_iter().map(|expr| match expr {
-                                                        LispExpr::OpVar(name) => Ok(name),
-                                                        _ => Err(EvaluationError::MalformedDefinition),
-                                                    }).collect::<Result<Vec<_>, _>>()?,
-                                                    body: Box::new(body),
-                                                };
+                                                        state: state.clone(),
+                                                        args: arg_vec.into_iter().map(|expr| match expr {
+                                                            LispExpr::OpVar(name) => Ok(name),
+                                                            _ => Err(EvaluationError::MalformedDefinition),
+                                                        }).collect::<Result<Vec<_>, _>>()?,
+                                                        body: Box::new(body),
+                                                    };
 
                                                     return_values.push(LispValue::Function(f));
                                                 }

@@ -123,7 +123,9 @@ mod tests {
     #[test]
     fn parse_integer() {
         let lit = "(55)";
-        let expected = Ok(LispExpr::SubExpr(vec![LispExpr::Value(LispValue::Integer(55))]));
+        let expected = Ok(LispExpr::SubExpr(
+            vec![LispExpr::Value(LispValue::Integer(55))],
+        ));
 
         let result = parse_lisp_string(lit);
         assert_eq!(expected, result);

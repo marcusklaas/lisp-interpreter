@@ -21,6 +21,21 @@ pub enum LispFunc {
     },
 }
 
+impl LispFunc {
+    pub fn new_custom(
+        args: Vec<String>,
+        body: LispExpr,
+        state: &State,
+    ) -> Result<LispFunc, EvaluationError> {
+        let body = body.transform(&args[..], state)?;
+        Ok(LispFunc::Custom {
+            state: state.clone(), // FIXME: remove later!!
+            args: args, // could we remove this also?
+            body: Box::new(body),
+        })
+    }
+}
+
 impl fmt::Display for LispFunc {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
@@ -37,6 +52,27 @@ pub enum LispExpr {
     // Offset from stack pointer on the return_values stack.
     Argument(usize),
     SubExpr(Vec<LispExpr>),
+}
+
+impl LispExpr {
+    pub fn transform(self, args: &[String], state: &State) -> Result<LispExpr, EvaluationError> {
+        match self {
+            x @ LispExpr::Value(_) => Ok(x),
+            // I think this is not possible. We shouldn't transform
+            // an expression twice without resolving the arguments first.
+            LispExpr::Argument(_) => unreachable!(),
+            LispExpr::OpVar(name) => {
+                // step 1: try to map it to an argument index
+                // step 2: if that fails, try to resolve it to a value in state
+                // step 3: if that fails also, throw an error
+
+                unimplemented!()
+            }
+            LispExpr::SubExpr(vec) => Ok(LispExpr::SubExpr(vec.into_iter()
+                .map(|e| e.transform(args, state))
+                .collect::<Result<Vec<_>, _>>()?)),
+        }
+    }
 }
 
 impl fmt::Display for LispExpr {
