@@ -1,7 +1,7 @@
 use std::str::Chars;
 use std::iter::Peekable;
 
-use super::LispExpr;
+use super::{LispExpr, LispValue};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ParseError {
@@ -98,7 +98,7 @@ fn parse_lisp(tokens: &mut Tokens) -> Result<Vec<LispExpr>, ParseError> {
         let next_token = match token {
             Token::OpenParen => LispExpr::SubExpr(parse_lisp(tokens)?),
             Token::CloseParen => return Ok(stack),
-            Token::Integer(l) => LispExpr::Integer(l),
+            Token::Integer(l) => LispExpr::Value(LispValue::Integer(l)),
             Token::OpVar(o) => LispExpr::OpVar(o),
         };
         stack.push(next_token);
@@ -123,7 +123,7 @@ mod tests {
     #[test]
     fn parse_integer() {
         let lit = "(55)";
-        let expected = Ok(LispExpr::SubExpr(vec![LispExpr::Integer(55)]));
+        let expected = Ok(LispExpr::SubExpr(vec![LispExpr::Value(LispValue::Integer(55))]));
 
         let result = parse_lisp_string(lit);
         assert_eq!(expected, result);
@@ -137,13 +137,13 @@ mod tests {
             LispExpr::OpVar("first".to_owned()),
             LispExpr::SubExpr(vec![
                 LispExpr::OpVar("list".to_owned()),
-                LispExpr::Integer(1),
+                LispExpr::Value(LispValue::Integer(1)),
                 LispExpr::SubExpr(vec![
                     LispExpr::OpVar("+".to_owned()),
-                    LispExpr::Integer(2),
-                    LispExpr::Integer(3),
+                    LispExpr::Value(LispValue::Integer(2)),
+                    LispExpr::Value(LispValue::Integer(3)),
                 ]),
-                LispExpr::Integer(9),
+                LispExpr::Value(LispValue::Integer(9)),
             ]),
         ]));
 

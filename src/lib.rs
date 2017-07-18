@@ -11,13 +11,13 @@ pub mod evaluator;
 use std::fmt;
 use evaluator::State;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LispFunc {
     BuiltIn(String),
     Custom {
         state: State,
         args: Vec<String>,
-        body: LispExpr,
+        body: Box<LispExpr>,
     },
 }
 
@@ -32,15 +32,18 @@ impl fmt::Display for LispFunc {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LispExpr {
-    Integer(u64),
+    Value(LispValue),
     OpVar(String),
+    // Offset from stack pointer on the return_values stack.
+    Argument(usize),
     SubExpr(Vec<LispExpr>),
 }
 
 impl fmt::Display for LispExpr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            &LispExpr::Integer(i) => write!(f, "{}", i),
+            &LispExpr::Argument(ref offset) => write!(f, "${}", offset),
+            &LispExpr::Value(ref v) => write!(f, "{}", v),
             &LispExpr::OpVar(ref name) => write!(f, "{}", name),
             &LispExpr::SubExpr(ref expr_vec) => {
                 write!(f, "(")?;
@@ -73,7 +76,7 @@ pub enum EvaluationError {
     TestOneTwoThree,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LispValue {
     Truth(bool),
     Integer(u64),

@@ -1,7 +1,9 @@
 use super::*;
 use std::collections::HashMap;
 
-#[derive(Debug, Clone)]
+// FIXME: this should not have the PartialEq/ Eq traits 
+// remove it once LispFunc no longer contains a State
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct State {
     pub bound: HashMap<String, LispValue>,
 }
@@ -96,20 +98,31 @@ macro_rules! func_match {
 }
 
 pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue, EvaluationError> {
-    let mut return_values = Vec::new();
+    let mut return_values: Vec<LispValue> = Vec::new();
     let mut states: Vec<State> = Vec::new();
     let mut state = init_state.clone();
     let mut instructions = vec![Instr::EvalAndPush(expr.clone())];
+    let mut stack_pointers = vec![0usize];
 
     while let Some(instr) = instructions.pop() {
         match instr {
             Instr::PopState => {
                 state = states.pop().unwrap();
+                let val = return_values.pop().unwrap();
+                let pointer = stack_pointers.pop().unwrap();
+                return_values.truncate(pointer);
+                return_values.push(val);
             }
             Instr::EvalAndPush(expr) => {
                 match expr {
-                    LispExpr::Integer(i) => {
-                        return_values.push(LispValue::Integer(i));
+                    LispExpr::Argument(offset) => {
+                        let index = return_values.len() - 1 - offset;
+                        let value: LispValue = (&return_values[index]).clone();
+                        // FIXME: not 100% sure this is what we're supposed to do
+                        return_values.push(value);
+                    }
+                    LispExpr::Value(v) => {
+                        return_values.push(v);
                     }
                     LispExpr::OpVar(ref n) => {
                         return_values.push(state.get_variable_value(n));
@@ -163,7 +176,7 @@ pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue,
                                                         LispExpr::OpVar(name) => Ok(name),
                                                         _ => Err(EvaluationError::MalformedDefinition),
                                                     }).collect::<Result<Vec<_>, _>>()?,
-                                                    body: body,
+                                                    body: Box::new(body),
                                                 };
 
                                                     return_values.push(LispValue::Function(f));
@@ -217,15 +230,17 @@ pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue,
                                     return Err(EvaluationError::ArgumentCountMismatch);
                                 }
 
-                                // FIXME: why do we do this again?
+                                stack_pointers.push(return_values.len());
+
                                 for (arg_name, arg_value) in state.bound.iter() {
                                     closure.set_variable(arg_name, arg_value.clone());
+                                    return_values.push(arg_value.clone());
                                 }
 
                                 ::std::mem::swap(&mut closure, &mut state);
                                 states.push(closure);
                                 instructions.push(Instr::PopState);
-                                instructions.push(Instr::EvalAndPush(body));
+                                instructions.push(Instr::EvalAndPush(*body));
                                 instructions.push(Instr::BindArguments(args));
                                 instructions.extend(expr_list.into_iter().map(Instr::EvalAndPush));
                             }
@@ -306,6 +321,7 @@ pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue,
     }
 
     *init_state = state;
+    assert!(stack_pointers == vec![0]);
     assert!(instructions.is_empty());
     assert!(states.is_empty());
     assert!(return_values.len() == 1);
