@@ -16,7 +16,10 @@ fn unitary_int<F: Fn(u64) -> Result<LispValue, EvaluationError>>(
 ) -> Result<(), EvaluationError> {
     match stack.pop().unwrap() {
         LispValue::Integer(i) => Ok(stack.push(f(i)?)),
-        _ => return Err(EvaluationError::ArgumentTypeMismatch),
+        x => {
+            println!("Trying to intop on non-int: {:?}", x);
+            return Err(EvaluationError::ArgumentTypeMismatch);
+        }
     }
 }
 
@@ -41,6 +44,7 @@ pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue,
     while let Some(instr) = instructions.pop() {
         match instr {
             Instr::PopState => {
+                // FIXME: uncomment the line below
                 state = states.pop().unwrap();
             }
             Instr::EvalAndPush(expr) => {
@@ -50,6 +54,7 @@ pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue,
                     }
                     LispExpr::OpVar(ref n) => {
                         let val = state.get_variable_value(n);
+                        // println!("getting {}: {}", n, &val);
                         return_values.push(val);
                     }
                     // This is actually a function call - we should
@@ -104,7 +109,10 @@ pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue,
 
                                                 return_values.push(LispValue::Function(f));
                                             }
-                                            _ => return Err(EvaluationError::ArgumentTypeMismatch),
+                                            _ => {
+                                                println!("Trying to lambda without args");
+                                                return Err(EvaluationError::ArgumentTypeMismatch);
+                                            }
                                         }
                                     }
                                     ("define", 2) => {
@@ -115,7 +123,10 @@ pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue,
                                                     Instr::EvalAndPush(expr_list.remove(0)),
                                                 );
                                             }
-                                            _ => return Err(EvaluationError::ArgumentTypeMismatch),
+                                            _ => {
+                                                println!("Bad define");
+                                                return Err(EvaluationError::ArgumentTypeMismatch);
+                                            }
                                         }
                                     }
                                     (eager_func_name, _) => {
@@ -135,12 +146,17 @@ pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue,
                                 args,
                                 body,
                             } => {
+                                // FIXME: why do we do this again?
+                                for (arg_name, arg_value) in state.bound.iter() {
+                                    closure.set_variable(arg_name, arg_value.clone());
+                                }
+
                                 ::std::mem::swap(&mut closure, &mut state);
                                 states.push(closure);
                                 instructions.push(Instr::PopState);
                                 instructions.push(Instr::EvalAndPush(body));
                                 instructions.push(Instr::BindArguments(args));
-                                for expr in expr_list.into_iter().rev() {
+                                for expr in expr_list.into_iter() {
                                     instructions.push(Instr::EvalAndPush(expr));
                                 }
                             }
@@ -183,6 +199,7 @@ pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue,
                             new_vec.push(return_values.pop().unwrap());
                             return_values.push(LispValue::SubValue(new_vec));
                         } else {
+                            println!("Trying to cons");
                             return Err(EvaluationError::ArgumentTypeMismatch);
                         }
                     }
@@ -194,7 +211,9 @@ pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue,
             }
             Instr::BindArguments(name_mapping) => {
                 for arg_name in &name_mapping {
-                    state.set_variable(arg_name, return_values.pop().unwrap());
+                    let val = return_values.pop().unwrap();
+                    // println!("setting {} to {}", arg_name, &val);
+                    state.set_variable(arg_name, val);
                 }
             }
             Instr::PopCondPush(true_expr, false_expr) => {
@@ -202,6 +221,7 @@ pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue,
                     let next_instr = if b { true_expr } else { false_expr };
                     instructions.push(Instr::EvalAndPush(next_instr));
                 } else {
+                    println!("Trying to cond on non-truth value");
                     return Err(EvaluationError::ArgumentTypeMismatch);
                 }
             }

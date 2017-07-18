@@ -8,7 +8,7 @@ use super::{LispValue, LispFunc, LispExpr, EvaluationError};
 
 #[derive(Debug, Clone)]
 pub struct State {
-    bound: HashMap<String, LispValue>,
+    pub bound: HashMap<String, LispValue>,
 }
 
 impl State {

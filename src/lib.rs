@@ -22,7 +22,7 @@ impl fmt::Display for LispFunc {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             &LispFunc::BuiltIn(ref name) => write!(f, "{}", name),
-            &LispFunc::Custom { ref args, ref body, .. } => write!(f, "\\{:?} -> {:?}", args, body),
+            &LispFunc::Custom { ref args, ref body, .. } => write!(f, "{:?} -> {}", args, body),
         }
     }
 }
@@ -32,6 +32,28 @@ pub enum LispExpr {
     Integer(u64),
     OpVar(String),
     SubExpr(Vec<LispExpr>),
+}
+
+impl fmt::Display for LispExpr {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            &LispExpr::Integer(i) => write!(f, "{}", i),
+            &LispExpr::OpVar(ref name) => write!(f, "{}", name),
+            &LispExpr::SubExpr(ref expr_vec) => {
+                write!(f, "(")?;
+
+                for (idx, expr) in expr_vec.iter().enumerate() {
+                    if idx > 0 {
+                        write!(f, " ")?;
+                    }
+
+                    write!(f, "{}", expr)?;
+                }
+
+                write!(f, ")")
+            }
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
