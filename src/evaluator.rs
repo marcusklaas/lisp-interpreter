@@ -170,14 +170,20 @@ pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue,
                                             [arg_list, body],
                                             match arg_list {
                                                 LispExpr::SubExpr(arg_vec) => {
-                                                    let f = LispFunc::Custom {
-                                                        state: state.clone(),
-                                                        args: arg_vec.into_iter().map(|expr| match expr {
-                                                            LispExpr::OpVar(name) => Ok(name),
-                                                            _ => Err(EvaluationError::MalformedDefinition),
-                                                        }).collect::<Result<Vec<_>, _>>()?,
-                                                        body: Box::new(body),
-                                                    };
+                                                    // let f = LispFunc::Custom {
+                                                    //     state: state.clone(),
+                                                    //     args: arg_vec.into_iter().map(|expr| match expr {
+                                                    //         LispExpr::OpVar(name) => Ok(name),
+                                                    //         _ => Err(EvaluationError::MalformedDefinition),
+                                                    //     }).collect::<Result<Vec<_>, _>>()?,
+                                                    //     body: Box::new(body),
+                                                    // };
+                                                    let args = arg_vec.into_iter().map(|expr| match expr {
+                                                        LispExpr::OpVar(name) => Ok(name),
+                                                        _ => Err(EvaluationError::MalformedDefinition),
+                                                    }).collect::<Result<Vec<_>, _>>()?;
+                                                    let f =
+                                                        LispFunc::new_custom(args, body, &state)?;
 
                                                     return_values.push(LispValue::Function(f));
                                                 }

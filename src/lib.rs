@@ -55,18 +55,24 @@ pub enum LispExpr {
 }
 
 impl LispExpr {
+    // FIXME: we might not need a Result and just always return an Expr
     pub fn transform(self, args: &[String], state: &State) -> Result<LispExpr, EvaluationError> {
         match self {
             x @ LispExpr::Value(_) => Ok(x),
             // I think this is not possible. We shouldn't transform
             // an expression twice without resolving the arguments first.
             LispExpr::Argument(_) => unreachable!(),
-            LispExpr::OpVar(name) => {
+            LispExpr::OpVar(ref name) => {
                 // step 1: try to map it to an argument index
-                // step 2: if that fails, try to resolve it to a value in state
-                // step 3: if that fails also, throw an error
+                if let Some(index) = args.into_iter().position(|a| a == name) {
+                    Ok(LispExpr::Argument(index))
+                } else {
+                    // step 2: if that fails, try to resolve it to a value in state
+                    Ok(LispExpr::Value(state.get_variable_value(name)))
+                }
 
-                unimplemented!()
+                // step 3: (maybe) if that fails also, throw an error
+                //unimplemented!()
             }
             LispExpr::SubExpr(vec) => Ok(LispExpr::SubExpr(vec.into_iter()
                 .map(|e| e.transform(args, state))
@@ -114,6 +120,7 @@ pub enum EvaluationError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LispValue {
+    // TODO: rename this to Boolean at some point
     Truth(bool),
     Integer(u64),
     Function(LispFunc),
@@ -197,6 +204,29 @@ mod tests {
         I: IntoIterator<Item = &'i str>,
     {
         assert_eq!(expected_err, check_lisp(commands).unwrap_err());
+    }
+
+    #[test]
+    fn transform_expr() {
+        let expr = LispExpr::SubExpr(vec![
+            LispExpr::OpVar("x".into()),
+            LispExpr::OpVar("#t".into()),
+            LispExpr::SubExpr(vec![
+                LispExpr::Value(LispValue::Integer(5)),
+                LispExpr::OpVar("y".into()),
+            ]),
+        ]);
+
+        let transformed_expr = expr.transform(&["x".into(), "y".into()], &State::new());
+
+        let expected_transform = LispExpr::SubExpr(vec![
+            LispExpr::Argument(0),
+            LispExpr::Value(LispValue::Truth(true)),
+            LispExpr::SubExpr(vec![
+                LispExpr::Value(LispValue::Integer(5)),
+                LispExpr::Argument(1),
+            ]),
+        ]);
     }
 
     #[test]
