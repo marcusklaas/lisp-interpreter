@@ -2,20 +2,30 @@ use super::*;
 
 enum Instr {
     EvalAndPush(LispExpr),
-    PopAndWrap(usize),
     EvalFunction(Vec<LispExpr>),
     PopCondPush(LispExpr, LispExpr),
     PopAndSet(String),
     PopState,
     BindArguments(Vec<String>),
+    EvalFunctionEager(String, usize),
 }
 
-fn unitary_int<F: Fn(u64) -> LispValue>(
+fn unitary_int<F: Fn(u64) -> Result<LispValue, EvaluationError>>(
     stack: &mut Vec<LispValue>,
     f: F,
 ) -> Result<(), EvaluationError> {
     match stack.pop().unwrap() {
-        LispValue::Integer(i) => Ok(stack.push(f(i))),
+        LispValue::Integer(i) => Ok(stack.push(f(i)?)),
+        _ => return Err(EvaluationError::ArgumentTypeMismatch),
+    }
+}
+
+fn unitary_list<F: Fn(Vec<LispValue>) -> Result<LispValue, EvaluationError>>(
+    stack: &mut Vec<LispValue>,
+    f: F,
+) -> Result<(), EvaluationError> {
+    match stack.pop().unwrap() {
+        LispValue::SubValue(v) => Ok(stack.push(f(v)?)),
         _ => return Err(EvaluationError::ArgumentTypeMismatch),
     }
 }
@@ -56,11 +66,6 @@ pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue,
                     }
                 }
             }
-            Instr::PopAndWrap(count) => {
-                let len = return_values.len();
-                let new_vec = return_values.split_off(len - count);
-                return_values.push(LispValue::SubValue(new_vec));
-            }
             // Pops a function off the value stack and applies it
             Instr::EvalFunction(mut expr_list) => {
                 let head = return_values.pop().unwrap();
@@ -69,28 +74,19 @@ pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue,
                         match f {
                             LispFunc::BuiltIn(func_name) => {
                                 match (&func_name[..], expr_list.len()) {
-                                    ("list", _) => {
-                                        instructions.push(Instr::PopAndWrap(expr_list.len()));
-                                        for expr in expr_list.into_iter().rev() {
-                                            instructions.push(Instr::EvalAndPush(expr));
-                                        }
-                                    }
-                                    // ("zero?", 1) => {
-                                    //     instructions.push(Instr::CheckZero);
-                                    //     instructions.push(Instr::EvalAndPush(expr_list.remove(0)));
-                                    // }
-                                    // ("add1", 1) => {
-                                    //     instructions.push(Instr::AddOne);
-                                    //     instructions.push(Instr::EvalAndPush(expr_list.remove(0)));
-                                    // }
-                                    // ("null?", 1) => {
-                                    //     instructions.push(Instr::CheckNull);
-                                    //     instructions.push(Instr::EvalAndPush(expr_list.remove(0)));
-                                    // }
+                                    // TODO: add length checks
+                                    // TODO: get rid of the arg len pattern match
                                     ("cond", 3) => {
-                                        let (truth_value, true_expr, false_expr) = (expr_list.remove(0), expr_list.remove(0), expr_list.remove(0));
+                                        let (truth_value, true_expr, false_expr) =
+                                            (
+                                                expr_list.remove(0),
+                                                expr_list.remove(0),
+                                                expr_list.remove(0),
+                                            );
                                         // Queue condition evaluation
-                                        instructions.push(Instr::PopCondPush(true_expr, false_expr));
+                                        instructions.push(
+                                            Instr::PopCondPush(true_expr, false_expr),
+                                        );
                                         // Queue truth value
                                         instructions.push(Instr::EvalAndPush(truth_value));
                                     }
@@ -115,12 +111,23 @@ pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue,
                                         match expr_list.remove(0) {
                                             LispExpr::OpVar(name) => {
                                                 instructions.push(Instr::PopAndSet(name));
-                                                instructions.push(Instr::EvalAndPush(expr_list.remove(0)));
+                                                instructions.push(
+                                                    Instr::EvalAndPush(expr_list.remove(0)),
+                                                );
                                             }
                                             _ => return Err(EvaluationError::ArgumentTypeMismatch),
                                         }
                                     }
-                                    _ => return Err(EvaluationError::UnknownVariable(func_name)),
+                                    (eager_func_name, _) => {
+                                        // FIXME: clone is probably unnecessary
+                                        instructions.push(Instr::EvalFunctionEager(
+                                            eager_func_name.into(),
+                                            expr_list.len(),
+                                        ));
+                                        instructions.extend(expr_list.into_iter().rev().map(|x| {
+                                            Instr::EvalAndPush(x)
+                                        }));
+                                    }
                                 }
                             }
                             LispFunc::Custom {
@@ -140,6 +147,49 @@ pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue,
                         }
                     }
                     _ => return Err(EvaluationError::NonFunctionApplication),
+                }
+            }
+            Instr::EvalFunctionEager(func_name, arg_count) => {
+                match (&func_name[..], arg_count) {
+                    ("list", _) => {
+                        let len = return_values.len();
+                        let new_vec = return_values.split_off(len - arg_count);
+                        return_values.push(LispValue::SubValue(new_vec));
+                    }
+                    ("car", 1) => {
+                        unitary_list(&mut return_values, |mut vec| match vec.pop() {
+                            Some(car) => Ok(car),
+                            None => Err(EvaluationError::EmptyList),
+                        })?
+                    }
+                    ("cdr", 1) => {
+                        unitary_list(&mut return_values, |mut vec| match vec.pop() {
+                            Some(_) => Ok(LispValue::SubValue(vec)),
+                            None => Err(EvaluationError::EmptyList),
+                        })?
+                    }
+                    ("add1", 1) => {
+                        unitary_int(&mut return_values, |i| Ok(LispValue::Integer(i + 1)))?
+                    }
+                    ("sub1", 1) => {
+                        unitary_int(&mut return_values, |i| if i > 0 {
+                            Ok(LispValue::Integer(i - 1))
+                        } else {
+                            Err(EvaluationError::SubZero)
+                        })?
+                    }
+                    ("cons", 2) => {
+                        if let LispValue::SubValue(mut new_vec) = return_values.pop().unwrap() {
+                            new_vec.push(return_values.pop().unwrap());
+                            return_values.push(LispValue::SubValue(new_vec));
+                        } else {
+                            return Err(EvaluationError::ArgumentTypeMismatch);
+                        }
+                    }
+                    ("zero?", 1) => {
+                        unitary_int(&mut return_values, |i| Ok(LispValue::Truth(i == 0)))?
+                    }
+                    _ => return Err(EvaluationError::UnknownVariable(func_name)),
                 }
             }
             Instr::BindArguments(name_mapping) => {
