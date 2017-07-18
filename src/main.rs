@@ -39,7 +39,8 @@ fn main() {
 
                 match parse_result {
                     Ok(ref expr) => {
-                        match evaluate_lisp_expr(expr, &mut state) {
+                        //match evaluate_lisp_expr(expr, &mut state) {
+                        match yalp::evaluator::eval(expr, &mut state) {
                             Ok(val) => {
                                 println!("{}", &val);
                                 state.set_variable(":last", val);

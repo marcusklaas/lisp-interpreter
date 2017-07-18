@@ -21,7 +21,7 @@ impl State {
         }
     }
 
-    fn get_variable_value(&self, var_name: &str) -> LispValue {
+    pub fn get_variable_value(&self, var_name: &str) -> LispValue {
         match self.bound.get(var_name) {
             Some(val) => val.clone(),
             None => LispValue::Function(LispFunc::BuiltIn(var_name.to_string())),

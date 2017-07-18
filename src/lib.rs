@@ -3,6 +3,7 @@
 
 pub mod parse;
 pub mod eval;
+pub mod evaluator;
 
 use std::fmt;
 use eval::State;
@@ -114,7 +115,7 @@ mod tests {
 
         for cmd in commands {
             let expr = parse_lisp_string(cmd)?;
-            last_ret_val = Some(evaluate_lisp_expr(&expr, &mut state)?);
+            last_ret_val = Some(evaluator::eval(&expr, &mut state)?);
         }
 
         Ok(last_ret_val.unwrap())
