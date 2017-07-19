@@ -218,12 +218,18 @@ pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue,
                                                         _ => Err(EvaluationError::MalformedDefinition),
                                                     }).collect::<Result<Vec<_>, _>>()?;
 
-                                                    // TODO: the final step happens here!!
+                                                    let stack_pointer =
+                                                        *stack_pointers.last().unwrap();
+                                                    let walked_body = body.replace_args(
+                                                        &return_values
+                                                            [stack_pointer..],
+                                                    );
 
-
-                                                    // let walked_body = body.replace
-                                                    let f =
-                                                        LispFunc::new_custom(args, body, &state)?;
+                                                    let f = LispFunc::new_custom(
+                                                        args,
+                                                        walked_body,
+                                                        &state,
+                                                    );
 
                                                     return_values.push(LispValue::Function(f));
                                                 }
@@ -275,7 +281,9 @@ pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue,
                                 instructions.push(Instr::PopState);
                                 instructions.push(Instr::EvalAndPush(*body));
                                 instructions.push(Instr::SetStackPointer(return_values.len()));
-                                instructions.extend(expr_list.into_iter().rev().map(Instr::EvalAndPush));
+                                instructions.extend(expr_list.into_iter().rev().map(
+                                    Instr::EvalAndPush,
+                                ));
                             }
                         }
                     }

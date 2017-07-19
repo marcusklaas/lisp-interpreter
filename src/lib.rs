@@ -5,7 +5,6 @@
 extern crate test;
 
 pub mod parse;
-//pub mod eval;
 pub mod evaluator;
 
 use std::fmt;
@@ -21,16 +20,11 @@ pub enum LispFunc {
 }
 
 impl LispFunc {
-    pub fn new_custom(
-        args: Vec<String>,
-        body: LispExpr,
-        state: &State,
-    ) -> Result<LispFunc, EvaluationError> {
-        let body = body.transform(&args[..], state)?;
-        Ok(LispFunc::Custom {
+    pub fn new_custom(args: Vec<String>, body: LispExpr, state: &State) -> LispFunc {
+        LispFunc::Custom {
             arg_count: args.len(),
-            body: Box::new(body),
-        })
+            body: Box::new(body.transform(&args[..], state)),
+        }
     }
 }
 
@@ -56,27 +50,36 @@ pub enum LispExpr {
 }
 
 impl LispExpr {
-    // FIXME: we might not need a Result and just always return an Expr
-    pub fn transform(self, args: &[String], state: &State) -> Result<LispExpr, EvaluationError> {
+    pub fn transform(self, args: &[String], state: &State) -> LispExpr {
         match self {
-            x @ LispExpr::Value(_) => Ok(x),
-            // I think this is not possible. We shouldn't transform
+            x @ LispExpr::Value(_) => x,
+            // This should not be possible. We shouldn't transform
             // an expression twice without resolving the arguments first.
             LispExpr::Argument(_) => unreachable!(),
             LispExpr::OpVar(name) => {
                 // step 1: try to map it to an argument index
                 if let Some(index) = args.into_iter().position(|a| a == &name) {
-                    Ok(LispExpr::Argument(index))
+                    LispExpr::Argument(index)
                 } else if let Some(v) = state.get_variable_value(&name) {
                     // step 2: if that fails, try to resolve it to a value in state
-                    Ok(LispExpr::Value(v))
+                    LispExpr::Value(v)
                 } else {
-                    Ok(LispExpr::OpVar(name))
+                    LispExpr::OpVar(name)
                 }
             }
-            LispExpr::SubExpr(vec) => Ok(LispExpr::SubExpr(vec.into_iter()
-                .map(|e| e.transform(args, state))
-                .collect::<Result<Vec<_>, _>>()?)),
+            LispExpr::SubExpr(vec) => LispExpr::SubExpr(
+                vec.into_iter().map(|e| e.transform(args, state)).collect(),
+            ),
+        }
+    }
+
+    pub fn replace_args(self, stack: &[LispValue]) -> LispExpr {
+        match self {
+            LispExpr::Argument(index) => LispExpr::Value(stack[index].clone()),
+            LispExpr::SubExpr(vec) => LispExpr::SubExpr(
+                vec.into_iter().map(|e| e.replace_args(stack)).collect(),
+            ),
+            x => x,
         }
     }
 }
@@ -219,14 +222,14 @@ mod tests {
 
         let transformed_expr = expr.transform(&["x".into(), "y".into()], &State::new());
 
-        let expected_transform = Ok(LispExpr::SubExpr(vec![
+        let expected_transform = LispExpr::SubExpr(vec![
             LispExpr::Argument(0),
             LispExpr::Value(LispValue::Truth(true)),
             LispExpr::SubExpr(vec![
                 LispExpr::Value(LispValue::Integer(5)),
                 LispExpr::Argument(1),
             ]),
-        ]));
+        ]);
 
         assert_eq!(expected_transform, transformed_expr);
     }
@@ -279,10 +282,10 @@ mod tests {
         check_lisp_ok(vec!["(null? (list))"], "#t");
     }
 
-    // #[test]
-    // fn cdr() {
-    //     check_lisp_ok(vec!["(cdr (1 2 3 4))"], "(2 3 4)");
-    // }
+    #[test]
+    fn cdr() {
+        check_lisp_ok(vec!["(cdr (list 1 2 3 4))"], "(1 2 3)");
+    }
 
     #[test]
     fn is_zero_of_zero() {
