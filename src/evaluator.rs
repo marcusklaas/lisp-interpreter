@@ -11,18 +11,55 @@ pub struct State {
 impl State {
     pub fn new() -> State {
         State {
-            bound: [("#t", true), ("#f", false)]
-                .into_iter()
-                .map(|&(var_name, val)| (var_name.into(), LispValue::Truth(val)))
+            bound: vec![
+                ("#t", LispValue::Truth(true)),
+                ("#f", LispValue::Truth(false)),
+                (
+                    "zero?",
+                    LispValue::Function(LispFunc::BuiltIn("zero?".into()))
+                ),
+                (
+                    "add1",
+                    LispValue::Function(LispFunc::BuiltIn("add1".into()))
+                ),
+                (
+                    "sub1",
+                    LispValue::Function(LispFunc::BuiltIn("sub1".into()))
+                ),
+                (
+                    "cons",
+                    LispValue::Function(LispFunc::BuiltIn("cons".into()))
+                ),
+                (
+                    "null?",
+                    LispValue::Function(LispFunc::BuiltIn("null?".into()))
+                ),
+                ("car", LispValue::Function(LispFunc::BuiltIn("car".into()))),
+                ("cdr", LispValue::Function(LispFunc::BuiltIn("cdr".into()))),
+                (
+                    "cond",
+                    LispValue::Function(LispFunc::BuiltIn("cond".into()))
+                ),
+                (
+                    "define",
+                    LispValue::Function(LispFunc::BuiltIn("define".into()))
+                ),
+                (
+                    "lambda",
+                    LispValue::Function(LispFunc::BuiltIn("lambda".into()))
+                ),
+                (
+                    "list",
+                    LispValue::Function(LispFunc::BuiltIn("list".into()))
+                ),
+            ].into_iter()
+                .map(|(var_name, val)| (var_name.into(), val))
                 .collect(),
         }
     }
 
-    pub fn get_variable_value(&self, var_name: &str) -> LispValue {
-        match self.bound.get(var_name) {
-            Some(val) => val.clone(),
-            None => LispValue::Function(LispFunc::BuiltIn(var_name.to_string())),
-        }
+    pub fn get_variable_value(&self, var_name: &str) -> Option<LispValue> {
+        self.bound.get(var_name).cloned()
     }
 
     pub fn set_variable(&mut self, var_name: &str, val: LispValue) {
@@ -36,8 +73,8 @@ enum Instr {
     PopCondPush(LispExpr, LispExpr),
     PopAndSet(String),
     PopState,
-    BindArguments(Vec<String>),
     EvalFunctionEager(String, usize),
+    SetStackPointer(usize),
 }
 
 fn unitary_int<F: Fn(u64) -> Result<LispValue, EvaluationError>>(
@@ -99,15 +136,16 @@ macro_rules! func_match {
 
 pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue, EvaluationError> {
     let mut return_values: Vec<LispValue> = Vec::new();
-    let mut states: Vec<State> = Vec::new();
     let mut state = init_state.clone();
     let mut instructions = vec![Instr::EvalAndPush(expr.clone())];
     let mut stack_pointers = vec![0usize];
 
     while let Some(instr) = instructions.pop() {
         match instr {
+            Instr::SetStackPointer(p) => {
+                stack_pointers.push(p);
+            }
             Instr::PopState => {
-                state = states.pop().unwrap();
                 let val = return_values.pop().unwrap();
                 let pointer = stack_pointers.pop().unwrap();
                 return_values.truncate(pointer);
@@ -116,16 +154,20 @@ pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue,
             Instr::EvalAndPush(expr) => {
                 match expr {
                     LispExpr::Argument(offset) => {
-                        let index = return_values.len() - 1 - offset;
+                        let pointer = stack_pointers.last().unwrap();
+                        let index = pointer + offset;
                         let value: LispValue = (&return_values[index]).clone();
-                        // FIXME: not 100% sure this is what we're supposed to do
                         return_values.push(value);
                     }
                     LispExpr::Value(v) => {
                         return_values.push(v);
                     }
                     LispExpr::OpVar(ref n) => {
-                        return_values.push(state.get_variable_value(n));
+                        if let Some(v) = state.get_variable_value(n) {
+                            return_values.push(v);
+                        } else {
+                            return Err(EvaluationError::UnknownVariable(n.clone()));
+                        }
                     }
                     // This is actually a function call - we should
                     // probably rename it.
@@ -144,6 +186,7 @@ pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue,
             // Pops a function off the value stack and applies it
             Instr::EvalFunction(expr_list) => {
                 let head = return_values.pop().unwrap();
+
                 match head {
                     LispValue::Function(f) => {
                         match f {
@@ -170,18 +213,15 @@ pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue,
                                             [arg_list, body],
                                             match arg_list {
                                                 LispExpr::SubExpr(arg_vec) => {
-                                                    // let f = LispFunc::Custom {
-                                                    //     state: state.clone(),
-                                                    //     args: arg_vec.into_iter().map(|expr| match expr {
-                                                    //         LispExpr::OpVar(name) => Ok(name),
-                                                    //         _ => Err(EvaluationError::MalformedDefinition),
-                                                    //     }).collect::<Result<Vec<_>, _>>()?,
-                                                    //     body: Box::new(body),
-                                                    // };
                                                     let args = arg_vec.into_iter().map(|expr| match expr {
                                                         LispExpr::OpVar(name) => Ok(name),
                                                         _ => Err(EvaluationError::MalformedDefinition),
                                                     }).collect::<Result<Vec<_>, _>>()?;
+
+                                                    // TODO: the final step happens here!!
+
+
+                                                    // let walked_body = body.replace
                                                     let f =
                                                         LispFunc::new_custom(args, body, &state)?;
 
@@ -227,28 +267,15 @@ pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue,
                                     }
                                 }
                             }
-                            LispFunc::Custom {
-                                state: mut closure,
-                                args,
-                                body,
-                            } => {
-                                if args.len() != expr_list.len() {
+                            LispFunc::Custom { arg_count, body } => {
+                                if arg_count != expr_list.len() {
                                     return Err(EvaluationError::ArgumentCountMismatch);
                                 }
 
-                                stack_pointers.push(return_values.len());
-
-                                for (arg_name, arg_value) in state.bound.iter() {
-                                    closure.set_variable(arg_name, arg_value.clone());
-                                    return_values.push(arg_value.clone());
-                                }
-
-                                ::std::mem::swap(&mut closure, &mut state);
-                                states.push(closure);
                                 instructions.push(Instr::PopState);
                                 instructions.push(Instr::EvalAndPush(*body));
-                                instructions.push(Instr::BindArguments(args));
-                                instructions.extend(expr_list.into_iter().map(Instr::EvalAndPush));
+                                instructions.push(Instr::SetStackPointer(return_values.len()));
+                                instructions.extend(expr_list.into_iter().rev().map(Instr::EvalAndPush));
                             }
                         }
                     }
@@ -302,14 +329,21 @@ pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue,
                         unitary_int(&mut return_values, |i| Ok(LispValue::Truth(i == 0)))?
                     },
                     (_, _) => {
-                        return Err(EvaluationError::UnknownVariable(func_name))
+                        // Try to get function from State
+                        if let Some(LispValue::Function(LispFunc::Custom { arg_count: da_arg_count, body, .. })) = state.get_variable_value(&func_name[..]) {
+                            // TODO: deduplicate!
+                            if da_arg_count != arg_count {
+                                return Err(EvaluationError::ArgumentCountMismatch);
+                            }
+
+                            instructions.push(Instr::PopState);
+                            instructions.push(Instr::EvalAndPush(*body));
+                            instructions.push(Instr::SetStackPointer(return_values.len() - da_arg_count));
+                        } else {
+                            return Err(EvaluationError::UnknownVariable(func_name));
+                        }
                     }
                 ])
-            }
-            Instr::BindArguments(name_mapping) => {
-                for arg_name in &name_mapping {
-                    state.set_variable(arg_name, return_values.pop().unwrap());
-                }
             }
             Instr::PopCondPush(true_expr, false_expr) => {
                 if let LispValue::Truth(b) = return_values.pop().unwrap() {
@@ -329,7 +363,6 @@ pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue,
     *init_state = state;
     assert!(stack_pointers == vec![0]);
     assert!(instructions.is_empty());
-    assert!(states.is_empty());
     assert!(return_values.len() == 1);
     Ok(return_values.pop().unwrap())
 }

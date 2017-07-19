@@ -5,6 +5,7 @@ use yalp::evaluator::State;
 use yalp::parse::parse_lisp_string;
 
 const PRELUDE: &'static [&'static str] = &[
+    "(define test (lambda (x) (cond (zero? x) 0 (test (sub1 x)))))",
     "(define add (lambda (x y) (cond (zero? y) x (add (add1 x) (sub1 y)))))",
     "(define mult (lambda (x y) (cond (zero? y) 0 (add x (mult x (sub1 y))))))",
     "(define filter (lambda (f xs) (cond (null? xs) (list) (cond (f (car xs)) (cons (car xs) (filter f (cdr xs))) (filter f (cdr xs))))))",

@@ -15,8 +15,7 @@ use evaluator::State;
 pub enum LispFunc {
     BuiltIn(String),
     Custom {
-        state: State,
-        args: Vec<String>,
+        arg_count: usize,
         body: Box<LispExpr>,
     },
 }
@@ -29,8 +28,7 @@ impl LispFunc {
     ) -> Result<LispFunc, EvaluationError> {
         let body = body.transform(&args[..], state)?;
         Ok(LispFunc::Custom {
-            state: state.clone(), // FIXME: remove later!!
-            args: args, // could we remove this also?
+            arg_count: args.len(),
             body: Box::new(body),
         })
     }
@@ -40,7 +38,10 @@ impl fmt::Display for LispFunc {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             &LispFunc::BuiltIn(ref name) => write!(f, "{}", name),
-            &LispFunc::Custom { ref args, ref body, .. } => write!(f, "{:?} -> {}", args, body),
+            &LispFunc::Custom {
+                arg_count,
+                ref body,
+            } => write!(f, "{} -> {}", arg_count, body),
         }
     }
 }
@@ -62,17 +63,16 @@ impl LispExpr {
             // I think this is not possible. We shouldn't transform
             // an expression twice without resolving the arguments first.
             LispExpr::Argument(_) => unreachable!(),
-            LispExpr::OpVar(ref name) => {
+            LispExpr::OpVar(name) => {
                 // step 1: try to map it to an argument index
-                if let Some(index) = args.into_iter().position(|a| a == name) {
+                if let Some(index) = args.into_iter().position(|a| a == &name) {
                     Ok(LispExpr::Argument(index))
-                } else {
+                } else if let Some(v) = state.get_variable_value(&name) {
                     // step 2: if that fails, try to resolve it to a value in state
-                    Ok(LispExpr::Value(state.get_variable_value(name)))
+                    Ok(LispExpr::Value(v))
+                } else {
+                    Ok(LispExpr::OpVar(name))
                 }
-
-                // step 3: (maybe) if that fails also, throw an error
-                //unimplemented!()
             }
             LispExpr::SubExpr(vec) => Ok(LispExpr::SubExpr(vec.into_iter()
                 .map(|e| e.transform(args, state))
@@ -219,14 +219,16 @@ mod tests {
 
         let transformed_expr = expr.transform(&["x".into(), "y".into()], &State::new());
 
-        let expected_transform = LispExpr::SubExpr(vec![
+        let expected_transform = Ok(LispExpr::SubExpr(vec![
             LispExpr::Argument(0),
             LispExpr::Value(LispValue::Truth(true)),
             LispExpr::SubExpr(vec![
                 LispExpr::Value(LispValue::Integer(5)),
                 LispExpr::Argument(1),
             ]),
-        ]);
+        ]));
+
+        assert_eq!(expected_transform, transformed_expr);
     }
 
     #[test]
