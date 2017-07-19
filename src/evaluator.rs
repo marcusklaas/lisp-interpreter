@@ -1,9 +1,7 @@
 use super::*;
 use std::collections::HashMap;
 
-// FIXME: this should not have the PartialEq/ Eq traits
-// remove it once LispFunc no longer contains a State
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct State {
     pub bound: HashMap<String, LispValue>,
 }
