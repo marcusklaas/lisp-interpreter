@@ -10,47 +10,26 @@ impl State {
     pub fn new() -> State {
         State {
             bound: vec![
-                ("#t", LispValue::Truth(true)),
-                ("#f", LispValue::Truth(false)),
-                (
-                    "zero?",
-                    LispValue::Function(LispFunc::BuiltIn("zero?".into()))
-                ),
-                (
-                    "add1",
-                    LispValue::Function(LispFunc::BuiltIn("add1".into()))
-                ),
-                (
-                    "sub1",
-                    LispValue::Function(LispFunc::BuiltIn("sub1".into()))
-                ),
-                (
-                    "cons",
-                    LispValue::Function(LispFunc::BuiltIn("cons".into()))
-                ),
-                (
-                    "null?",
-                    LispValue::Function(LispFunc::BuiltIn("null?".into()))
-                ),
-                ("car", LispValue::Function(LispFunc::BuiltIn("car".into()))),
-                ("cdr", LispValue::Function(LispFunc::BuiltIn("cdr".into()))),
-                (
-                    "cond",
-                    LispValue::Function(LispFunc::BuiltIn("cond".into()))
-                ),
-                (
-                    "define",
-                    LispValue::Function(LispFunc::BuiltIn("define".into()))
-                ),
-                (
-                    "lambda",
-                    LispValue::Function(LispFunc::BuiltIn("lambda".into()))
-                ),
-                (
-                    "list",
-                    LispValue::Function(LispFunc::BuiltIn("list".into()))
-                ),
+                "zero?",
+                "add1",
+                "sub1",
+                "cons",
+                "null?",
+                "cdr",
+                "car",
+                "cond",
+                "define",
+                "lambda",
+                "list",
             ].into_iter()
+                .map(|x| (x, LispValue::Function(LispFunc::BuiltIn(x.into()))))
+                .into_iter()
+                .chain(
+                    vec![
+                        ("#t", LispValue::Boolean(true)),
+                        ("#f", LispValue::Boolean(false)),
+                    ].into_iter(),
+                )
                 .map(|(var_name, val)| (var_name.into(), val))
                 .collect(),
         }
@@ -193,15 +172,15 @@ pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue,
                                     "cond" => {
                                         destructure!(
                                             expr_list,
-                                            [truth_value, true_expr, false_expr],
+                                            [boolean, true_expr, false_expr],
                                             {
                                                 // Queue condition evaluation
                                                 instructions.push(Instr::PopCondPush(
                                                     true_expr,
                                                     false_expr,
                                                 ));
-                                                // Queue truth value
-                                                instructions.push(Instr::EvalAndPush(truth_value));
+                                                // Queue Boolean value
+                                                instructions.push(Instr::EvalAndPush(boolean));
                                             }
                                         )?
                                     }
@@ -310,7 +289,7 @@ pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue,
                     ("null?", 1) => {
                         unitary_list(
                             &mut return_values,
-                            |vec| Ok(LispValue::Truth(vec.is_empty())),
+                            |vec| Ok(LispValue::Boolean(vec.is_empty())),
                         )?
                     },
                     ("add1", 1) => {
@@ -332,7 +311,7 @@ pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue,
                         }
                     },
                     ("zero?", 1) => {
-                        unitary_int(&mut return_values, |i| Ok(LispValue::Truth(i == 0)))?
+                        unitary_int(&mut return_values, |i| Ok(LispValue::Boolean(i == 0)))?
                     },
                     (_, _) => {
                         // Try to get function from State
@@ -351,8 +330,10 @@ pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue,
                     }
                 ])
             }
+            // Pops boolean value off stack, if true, queue evaluation of
+            // first expression, else queue evaluation of the second.
             Instr::PopCondPush(true_expr, false_expr) => {
-                if let LispValue::Truth(b) = return_values.pop().unwrap() {
+                if let LispValue::Boolean(b) = return_values.pop().unwrap() {
                     let next_instr = if b { true_expr } else { false_expr };
                     instructions.push(Instr::EvalAndPush(next_instr));
                 } else {

@@ -123,8 +123,7 @@ pub enum EvaluationError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LispValue {
-    // TODO: rename this to Boolean at some point
-    Truth(bool),
+    Boolean(bool),
     Integer(u64),
     Function(LispFunc),
     SubValue(Vec<LispValue>),
@@ -135,8 +134,8 @@ impl fmt::Display for LispValue {
         match self {
             &LispValue::Function(ref func) => write!(f, "func[{}]", func),
             &LispValue::Integer(i) => write!(f, "{}", i),
-            &LispValue::Truth(true) => write!(f, "#t"),
-            &LispValue::Truth(false) => write!(f, "#f"),
+            &LispValue::Boolean(true) => write!(f, "#t"),
+            &LispValue::Boolean(false) => write!(f, "#f"),
             &LispValue::SubValue(ref vec) => {
                 write!(f, "(")?;
 
@@ -224,7 +223,7 @@ mod tests {
 
         let expected_transform = LispExpr::SubExpr(vec![
             LispExpr::Argument(0),
-            LispExpr::Value(LispValue::Truth(true)),
+            LispExpr::Value(LispValue::Boolean(true)),
             LispExpr::SubExpr(vec![
                 LispExpr::Value(LispValue::Integer(5)),
                 LispExpr::Argument(1),
