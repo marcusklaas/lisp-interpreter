@@ -426,6 +426,22 @@ mod tests {
     }
 
     #[test]
+    fn sort() {
+        check_lisp_ok(
+            vec![
+                "(define filter (lambda (f xs) (cond (null? xs) (list) (cond (f (car xs)) (cons (car xs) (filter f (cdr xs))) (filter f (cdr xs))))))",
+                "(define not (lambda (t) (cond t #f #t)))",
+                "(define > (lambda (x y) (cond (zero? x) #f (cond (zero? y) #t (> (sub1 x) (sub1 y))))))",
+                "(define and (lambda (t1 t2) (cond t1 t2 #f)))",
+                "(define append (lambda (l1 l2) (cond (null? l2) l1 (cons (car l2) (append l1 (cdr l2))))))",
+                "(define sort (lambda (l) (cond (null? l) l (append (cons (car l) (sort (filter (lambda (x) (not (> x (car l)))) (cdr l)))) (sort (filter (lambda (x) (> x (car l))) l))))))",
+                "(sort (list 5 3 2 10 0 7))",
+            ],
+            "(0 2 3 5 7 10)",
+        );
+    }
+
+    #[test]
     fn closures() {
         check_lisp_ok(
             vec![
