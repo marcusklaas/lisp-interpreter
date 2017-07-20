@@ -46,11 +46,13 @@ impl State {
 
 enum Instr {
     EvalAndPush(LispExpr),
-    EvalFunction(Vec<LispExpr>),
+    // Function and argument vector, Tail call
+    EvalFunction(Vec<LispExpr>, bool),
     PopCondPush(LispExpr, LispExpr),
     PopAndSet(String),
     PopState,
-    EvalFunctionEager(LispFunc, usize),
+    // Function, Argument Count, Tail call
+    EvalFunctionEager(LispFunc, usize, bool),
     SetStackPointer(usize),
 }
 
@@ -100,6 +102,7 @@ pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue,
     let mut state = init_state.clone();
     let mut instructions = vec![Instr::EvalAndPush(expr.clone())];
     let mut stack_pointers = vec![0usize];
+    // let mut buffer: Vec<LispValue> = Vec::new();
 
     while let Some(instr) = instructions.pop() {
         match instr {
@@ -130,12 +133,12 @@ pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue,
                             return Err(EvaluationError::UnknownVariable(n.clone()));
                         }
                     }
-                    LispExpr::Call(mut expr_vec, _is_tail_call) => {
+                    LispExpr::Call(mut expr_vec, is_tail_call) => {
                         // step 1: remove head expression
                         let head_expr = expr_vec.remove(0);
 
                         // step 2: queue function evaluation with tail
-                        instructions.push(Instr::EvalFunction(expr_vec));
+                        instructions.push(Instr::EvalFunction(expr_vec, is_tail_call));
 
                         // step 3: queue evaluation of head
                         instructions.push(Instr::EvalAndPush(head_expr));
@@ -143,7 +146,7 @@ pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue,
                 }
             }
             // Pops a function off the value stack and applies it
-            Instr::EvalFunction(expr_list) => {
+            Instr::EvalFunction(expr_list, is_tail_call) => {
                 match return_values.pop().unwrap() {
                     LispValue::Function(LispFunc::BuiltIn(ref name)) if name == "cond" => {
                         destructure!(expr_list, [boolean, true_expr, false_expr], {
@@ -199,13 +202,17 @@ pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue,
                     // Eager argument evaluation: evaluate all arguments before
                     // calling the function.
                     LispValue::Function(f) => {
-                        instructions.push(Instr::EvalFunctionEager(f, expr_list.len()));
+                        instructions.push(Instr::EvalFunctionEager(
+                            f,
+                            expr_list.len(),
+                            is_tail_call,
+                        ));
                         instructions.extend(expr_list.into_iter().rev().map(Instr::EvalAndPush));
                     }
                     _ => return Err(EvaluationError::NonFunctionApplication),
                 }
             }
-            Instr::EvalFunctionEager(func, arg_count) => {
+            Instr::EvalFunctionEager(func, arg_count, is_tail_call) => {
                 match func {
                     LispFunc::BuiltIn(ref n) if n == "list" => {
                         let len = return_values.len();
@@ -289,11 +296,22 @@ pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue,
                             return Err(EvaluationError::ArgumentCountMismatch);
                         }
 
-                        instructions.push(Instr::PopState);
-                        instructions.push(Instr::EvalAndPush(*body));
-                        instructions.push(Instr::SetStackPointer(
-                            return_values.len() - da_arg_count,
-                        ));
+                        if is_tail_call {
+                            // Remove old arguments.
+                            // FIXME: this should be done more efficiently
+                            let current_pointer = *stack_pointers.last().unwrap();
+                            let cnt = return_values.len() - da_arg_count - current_pointer;
+                            for _ in 0..cnt {
+                                return_values.remove(current_pointer);
+                            }
+                            instructions.push(Instr::EvalAndPush(*body));
+                        } else {
+                            instructions.push(Instr::PopState);
+                            instructions.push(Instr::EvalAndPush(*body));
+                            instructions.push(Instr::SetStackPointer(
+                                return_values.len() - da_arg_count,
+                            ));
+                        }
                     }
                 }
             }

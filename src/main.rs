@@ -7,7 +7,7 @@ use yalp::parse::parse_lisp_string;
 const PRELUDE: &'static [&'static str] = &[
     "(define closure (lambda (x) (lambda (y) (add x y))))",
     "(define add (lambda (x y) (cond (zero? y) x (add (add1 x) (sub1 y)))))",
-    "(define mult (lambda (x y) (cond (zero? y) 0 (add x (mult x (sub1 y))))))",
+    "(define mult (lambda (x y) (cond (zero? y) 0 (add (mult x (sub1 y)) x))))",
     "(define filter (lambda (f xs) (cond (null? xs) (list) (cond (f (car xs)) (cons (car xs) (filter f (cdr xs))) (filter f (cdr xs))))))",
     "(define map (lambda (f xs) (cond (null? xs) (list) (cons (f (car xs)) (map f (cdr xs))))))",
     "(define not (lambda (t) (cond t #f #t)))",

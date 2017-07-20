@@ -70,8 +70,8 @@ impl LispExpr {
                     LispExpr::OpVar(name)
                 }
             }
-            LispExpr::Call(vec, is_tail_call) => {
-                let tail_call_iter = match (is_tail_call, vec.get(0)) {
+            LispExpr::Call(vec, _) => {
+                let do_tail_call = match (can_tail_call, vec.get(0)) {
                     // Special case for `cond`. Even though it is a function,
                     // its child expressions can still be tail calls.
                     (true, Some(&LispExpr::OpVar(ref name))) |
@@ -80,7 +80,7 @@ impl LispExpr {
                         if name == "cond" && vec.len() == 4 => true,
                     _ => false,
                 };
-                let tail_call_iter = (0..).map(|i| (i == 1 && i == 2) && tail_call_iter);
+                let tail_call_iter = (0..).map(|i| (i == 2 || i == 3) && do_tail_call);
 
                 // TODO: map in place?
                 LispExpr::Call(
