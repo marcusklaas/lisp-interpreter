@@ -1,5 +1,3 @@
-#![feature(slice_patterns)]
-#![feature(advanced_slice_patterns)]
 #![feature(test)]
 
 extern crate test;
@@ -24,6 +22,23 @@ impl LispFunc {
         LispFunc::Custom {
             arg_count: args.len(),
             body: Box::new(body.transform(&args[..], state, true)),
+        }
+    }
+
+    pub fn create_continuation(
+        f: LispFunc,
+        total_args: usize,
+        supplied_args: usize,
+        stack: &[LispValue],
+    ) -> LispFunc {
+        let arg_count = total_args - supplied_args;
+        let mut call_vec = vec![LispExpr::Value(LispValue::Function(f))];
+        call_vec.extend(stack[..supplied_args].iter().cloned().map(LispExpr::Value));
+        call_vec.extend((0..total_args - supplied_args).map(LispExpr::Argument));
+
+        LispFunc::Custom {
+            arg_count: arg_count,
+            body: Box::new(LispExpr::Call(call_vec, true)),
         }
     }
 }
@@ -52,7 +67,9 @@ pub enum LispExpr {
 }
 
 impl LispExpr {
-    // TODO: explain what the transform does
+    // Prepares a LispExpr for use in a lambda body, by mapping
+    // variables to references argument indices and checking what
+    // calls are tail calls.
     pub fn transform(self, args: &[String], state: &State, can_tail_call: bool) -> LispExpr {
         match self {
             x @ LispExpr::Value(_) => x,
@@ -82,7 +99,6 @@ impl LispExpr {
                 };
                 let tail_call_iter = (0..).map(|i| (i == 2 || i == 3) && do_tail_call);
 
-                // TODO: map in place?
                 LispExpr::Call(
                     vec.into_iter()
                         .zip(tail_call_iter)
@@ -94,6 +110,7 @@ impl LispExpr {
         }
     }
 
+    // Resolves references to function arguments. Used when creating closures.
     pub fn replace_args(self, stack: &[LispValue]) -> LispExpr {
         match self {
             LispExpr::Argument(index) => LispExpr::Value(stack[index].clone()),
@@ -450,6 +467,19 @@ mod tests {
                 "(map (lambda (f) (f 10)) (map (lambda (n) (lambda (x) (add x n))) (list 1 2 3 4 5 6 7 8 9 10)))",
             ],
             "(11 12 13 14 15 16 17 18 19 20)",
+        );
+    }
+
+    #[test]
+    fn curry() {
+        check_lisp_ok(
+            vec![
+                "(define add (lambda (x y) (cond (zero? y) x (add (add1 x) (sub1 y)))))",
+                "(define sum3 (lambda (x y z) (add x (add y z))))",
+                "(define sum2and5 (sum3 5))",
+                "(sum2and5 10 20)",
+            ],
+            "35",
         );
     }
 

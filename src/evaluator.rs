@@ -78,16 +78,14 @@ fn unitary_list<F: Fn(Vec<LispValue>) -> Result<LispValue, EvaluationError>>(
     }
 }
 
-macro_rules! do_nothing {
-    ( $y:ident, $x:expr ) => {{$x}};
-}
-
 macro_rules! destructure {
+    ( $y:ident, $x:expr ) => {{$x}};
+
     ( $y:ident, [ $( $i:ident ),* ], $body:expr ) => {
         {
             if let ($( Some($i), )* None) = {
                 let mut iter = $y.into_iter();
-                ( $( do_nothing!($i, iter.next()), )* iter.next() )
+                ( $( destructure!($i, iter.next()), )* iter.next() )
             } {
                 Ok($body)
             } else {
@@ -97,12 +95,10 @@ macro_rules! destructure {
     };
 }
 
-pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue, EvaluationError> {
+pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, EvaluationError> {
     let mut return_values: Vec<LispValue> = Vec::new();
-    let mut state = init_state.clone();
     let mut instructions = vec![Instr::EvalAndPush(expr.clone())];
     let mut stack_pointers = vec![0usize];
-    // let mut buffer: Vec<LispValue> = Vec::new();
 
     while let Some(instr) = instructions.pop() {
         match instr {
@@ -171,6 +167,10 @@ pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue,
                                         .collect::<Result<Vec<_>, _>>()?;
 
                                     let stack_pointer = *stack_pointers.last().unwrap();
+                                    // If there are any references to function arguments in
+                                    // the lambda body, we should resolve them before
+                                    // creating the lambda.
+                                    // This enables us to do closures.
                                     let walked_body =
                                         body.replace_args(&return_values[stack_pointer..]);
 
@@ -292,25 +292,45 @@ pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue,
                         arg_count: da_arg_count,
                         body,
                     } => {
-                        if da_arg_count != arg_count {
+                        // Too many arguments.
+                        if da_arg_count < arg_count {
                             return Err(EvaluationError::ArgumentCountMismatch);
                         }
-
-                        if is_tail_call {
-                            // Remove old arguments.
-                            // FIXME: this should be done more efficiently
-                            let current_pointer = *stack_pointers.last().unwrap();
-                            let cnt = return_values.len() - da_arg_count - current_pointer;
-                            for _ in 0..cnt {
-                                return_values.remove(current_pointer);
+                        // Not enough arguments, let's create a lambda that takes
+                        // the remainder.
+                        else if arg_count > 0 && arg_count < da_arg_count {
+                            let orig_func = LispFunc::Custom {
+                                arg_count: da_arg_count,
+                                body: body,
+                            };
+                            let stack_pointer = *stack_pointers.last().unwrap();
+                            let continuation = LispFunc::create_continuation(
+                                orig_func,
+                                da_arg_count,
+                                arg_count,
+                                &return_values[stack_pointer..],
+                            );
+                            return_values.truncate(stack_pointer);
+                            return_values.push(LispValue::Function(continuation));
+                        }
+                        // Exactly right number of arguments. Let's evaluate.
+                        else {
+                            if is_tail_call {
+                                // Remove old arguments of the stack.
+                                // FIXME: this should be done more efficiently
+                                let current_pointer = *stack_pointers.last().unwrap();
+                                let cnt = return_values.len() - arg_count - current_pointer;
+                                for _ in 0..cnt {
+                                    return_values.remove(current_pointer);
+                                }
+                                instructions.push(Instr::EvalAndPush(*body));
+                            } else {
+                                instructions.push(Instr::PopState);
+                                instructions.push(Instr::EvalAndPush(*body));
+                                instructions.push(Instr::SetStackPointer(
+                                    return_values.len() - arg_count,
+                                ));
                             }
-                            instructions.push(Instr::EvalAndPush(*body));
-                        } else {
-                            instructions.push(Instr::PopState);
-                            instructions.push(Instr::EvalAndPush(*body));
-                            instructions.push(Instr::SetStackPointer(
-                                return_values.len() - da_arg_count,
-                            ));
                         }
                     }
                 }
@@ -332,7 +352,6 @@ pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue,
         }
     }
 
-    *init_state = state;
     assert!(stack_pointers == vec![0]);
     assert!(instructions.is_empty());
     assert!(return_values.len() == 1);
