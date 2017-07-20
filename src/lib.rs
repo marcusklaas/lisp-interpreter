@@ -23,7 +23,7 @@ impl LispFunc {
     pub fn new_custom(args: Vec<String>, body: LispExpr, state: &State) -> LispFunc {
         LispFunc::Custom {
             arg_count: args.len(),
-            body: Box::new(body.transform(&args[..], state)),
+            body: Box::new(body.transform(&args[..], state, true)),
         }
     }
 }
@@ -46,11 +46,14 @@ pub enum LispExpr {
     OpVar(String),
     // Offset from stack pointer on the return_values stack.
     Argument(usize),
-    SubExpr(Vec<LispExpr>),
+    // Bool argument states whether the call is a
+    // tail call.
+    Call(Vec<LispExpr>, bool),
 }
 
 impl LispExpr {
-    pub fn transform(self, args: &[String], state: &State) -> LispExpr {
+    // TODO: explain what the transform does
+    pub fn transform(self, args: &[String], state: &State, can_tail_call: bool) -> LispExpr {
         match self {
             x @ LispExpr::Value(_) => x,
             // This should not be possible. We shouldn't transform
@@ -67,18 +70,39 @@ impl LispExpr {
                     LispExpr::OpVar(name)
                 }
             }
-            LispExpr::SubExpr(vec) => LispExpr::SubExpr(
-                vec.into_iter().map(|e| e.transform(args, state)).collect(),
-            ),
+            LispExpr::Call(vec, is_tail_call) => {
+                let tail_call_iter = match (is_tail_call, vec.get(0)) {
+                    // Special case for `cond`. Even though it is a function,
+                    // its child expressions can still be tail calls.
+                    (true, Some(&LispExpr::OpVar(ref name))) |
+                    (true,
+                     Some(&LispExpr::Value(LispValue::Function(LispFunc::BuiltIn(ref name)))))
+                        if name == "cond" && vec.len() == 4 => true,
+                    _ => false,
+                };
+                let tail_call_iter = (0..).map(|i| (i == 1 && i == 2) && tail_call_iter);
+
+                // TODO: map in place?
+                LispExpr::Call(
+                    vec.into_iter()
+                        .zip(tail_call_iter)
+                        .map(|(e, can_tail)| e.transform(args, state, can_tail))
+                        .collect(),
+                    can_tail_call,
+                )
+            }
         }
     }
 
     pub fn replace_args(self, stack: &[LispValue]) -> LispExpr {
         match self {
             LispExpr::Argument(index) => LispExpr::Value(stack[index].clone()),
-            LispExpr::SubExpr(vec) => LispExpr::SubExpr(
-                vec.into_iter().map(|e| e.replace_args(stack)).collect(),
-            ),
+            LispExpr::Call(vec, is_tail_call) => {
+                LispExpr::Call(
+                    vec.into_iter().map(|e| e.replace_args(stack)).collect(),
+                    is_tail_call,
+                )
+            }
             x => x,
         }
     }
@@ -90,7 +114,11 @@ impl fmt::Display for LispExpr {
             &LispExpr::Argument(ref offset) => write!(f, "${}", offset),
             &LispExpr::Value(ref v) => write!(f, "{}", v),
             &LispExpr::OpVar(ref name) => write!(f, "{}", name),
-            &LispExpr::SubExpr(ref expr_vec) => {
+            &LispExpr::Call(ref expr_vec, is_tail_call) => {
+                if is_tail_call {
+                    write!(f, "t")?;
+                }
+
                 write!(f, "(")?;
 
                 for (idx, expr) in expr_vec.iter().enumerate() {
@@ -210,25 +238,37 @@ mod tests {
 
     #[test]
     fn transform_expr() {
-        let expr = LispExpr::SubExpr(vec![
-            LispExpr::OpVar("x".into()),
-            LispExpr::OpVar("#t".into()),
-            LispExpr::SubExpr(vec![
-                LispExpr::Value(LispValue::Integer(5)),
-                LispExpr::OpVar("y".into()),
-            ]),
-        ]);
+        let expr = LispExpr::Call(
+            vec![
+                LispExpr::OpVar("x".into()),
+                LispExpr::OpVar("#t".into()),
+                LispExpr::Call(
+                    vec![
+                        LispExpr::Value(LispValue::Integer(5)),
+                        LispExpr::OpVar("y".into()),
+                    ],
+                    false
+                ),
+            ],
+            false,
+        );
 
-        let transformed_expr = expr.transform(&["x".into(), "y".into()], &State::new());
+        let transformed_expr = expr.transform(&["x".into(), "y".into()], &State::new(), true);
 
-        let expected_transform = LispExpr::SubExpr(vec![
-            LispExpr::Argument(0),
-            LispExpr::Value(LispValue::Boolean(true)),
-            LispExpr::SubExpr(vec![
-                LispExpr::Value(LispValue::Integer(5)),
-                LispExpr::Argument(1),
-            ]),
-        ]);
+        let expected_transform = LispExpr::Call(
+            vec![
+                LispExpr::Argument(0),
+                LispExpr::Value(LispValue::Boolean(true)),
+                LispExpr::Call(
+                    vec![
+                        LispExpr::Value(LispValue::Integer(5)),
+                        LispExpr::Argument(1),
+                    ],
+                    false
+                ),
+            ],
+            true,
+        );
 
         assert_eq!(expected_transform, transformed_expr);
     }

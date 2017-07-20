@@ -50,7 +50,7 @@ enum Instr {
     PopCondPush(LispExpr, LispExpr),
     PopAndSet(String),
     PopState,
-    EvalFunctionEager(String, usize),
+    EvalFunctionEager(LispFunc, usize),
     SetStackPointer(usize),
 }
 
@@ -95,22 +95,6 @@ macro_rules! destructure {
     };
 }
 
-macro_rules! func_match {
-    ($func:expr, $arg_count:expr, [$(($name:pat, $count:pat) => $body:expr),*]) => {
-        match $func {
-            $(
-                $name => {
-                    if let Some($count) = Some($arg_count) {
-                        $body
-                    } else {
-                        return Err(EvaluationError::ArgumentCountMismatch);
-                    }
-                }
-            )*
-        }
-    };
-}
-
 pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue, EvaluationError> {
     let mut return_values: Vec<LispValue> = Vec::new();
     let mut state = init_state.clone();
@@ -146,9 +130,7 @@ pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue,
                             return Err(EvaluationError::UnknownVariable(n.clone()));
                         }
                     }
-                    // This is actually a function call - we should
-                    // probably rename it.
-                    LispExpr::SubExpr(mut expr_vec) => {
+                    LispExpr::Call(mut expr_vec, _is_tail_call) => {
                         // step 1: remove head expression
                         let head_expr = expr_vec.remove(0);
 
@@ -162,173 +144,158 @@ pub fn eval<'e>(expr: &'e LispExpr, init_state: &mut State) -> Result<LispValue,
             }
             // Pops a function off the value stack and applies it
             Instr::EvalFunction(expr_list) => {
-                let head = return_values.pop().unwrap();
+                match return_values.pop().unwrap() {
+                    LispValue::Function(LispFunc::BuiltIn(ref name)) if name == "cond" => {
+                        destructure!(expr_list, [boolean, true_expr, false_expr], {
+                            // Queue condition evaluation
+                            instructions.push(Instr::PopCondPush(true_expr, false_expr));
+                            // Queue Boolean value
+                            instructions.push(Instr::EvalAndPush(boolean));
+                        })?
+                    }
+                    LispValue::Function(LispFunc::BuiltIn(ref name)) if name == "lambda" => {
+                        destructure!(
+                            expr_list,
+                            [arg_list, body],
+                            match arg_list {
+                                LispExpr::Call(arg_vec, _is_tail_call) => {
+                                    let args = arg_vec
+                                        .into_iter()
+                                        .map(|expr| match expr {
+                                            LispExpr::OpVar(name) => Ok(name),
+                                            _ => Err(EvaluationError::MalformedDefinition),
+                                        })
+                                        .collect::<Result<Vec<_>, _>>()?;
 
-                match head {
+                                    let stack_pointer = *stack_pointers.last().unwrap();
+                                    let walked_body =
+                                        body.replace_args(&return_values[stack_pointer..]);
+
+                                    let f = LispFunc::new_custom(args, walked_body, &state);
+
+                                    return_values.push(LispValue::Function(f));
+                                }
+                                _ => {
+                                    return Err(EvaluationError::ArgumentTypeMismatch);
+                                }
+                            }
+                        )?
+                    }
+                    LispValue::Function(LispFunc::BuiltIn(ref name)) if name == "define" => {
+                        destructure!(
+                            expr_list,
+                            [var_name, definition],
+                            match var_name {
+                                LispExpr::OpVar(name) => {
+                                    instructions.push(Instr::PopAndSet(name));
+                                    instructions.push(Instr::EvalAndPush(definition));
+                                }
+                                _ => {
+                                    return Err(EvaluationError::ArgumentTypeMismatch);
+                                }
+                            }
+                        )?
+                    }
+                    // Eager argument evaluation: evaluate all arguments before
+                    // calling the function.
                     LispValue::Function(f) => {
-                        match f {
-                            LispFunc::BuiltIn(func_name) => {
-                                match &func_name[..] {
-                                    "cond" => {
-                                        destructure!(
-                                            expr_list,
-                                            [boolean, true_expr, false_expr],
-                                            {
-                                                // Queue condition evaluation
-                                                instructions.push(Instr::PopCondPush(
-                                                    true_expr,
-                                                    false_expr,
-                                                ));
-                                                // Queue Boolean value
-                                                instructions.push(Instr::EvalAndPush(boolean));
-                                            }
-                                        )?
-                                    }
-                                    "lambda" => {
-                                        destructure!(
-                                            expr_list,
-                                            [arg_list, body],
-                                            match arg_list {
-                                                LispExpr::SubExpr(arg_vec) => {
-                                                    let args = arg_vec.into_iter().map(|expr| match expr {
-                                                        LispExpr::OpVar(name) => Ok(name),
-                                                        _ => Err(EvaluationError::MalformedDefinition),
-                                                    }).collect::<Result<Vec<_>, _>>()?;
-
-                                                    let stack_pointer =
-                                                        *stack_pointers.last().unwrap();
-                                                    let walked_body = body.replace_args(
-                                                        &return_values
-                                                            [stack_pointer..],
-                                                    );
-
-                                                    let f = LispFunc::new_custom(
-                                                        args,
-                                                        walked_body,
-                                                        &state,
-                                                    );
-
-                                                    return_values.push(LispValue::Function(f));
-                                                }
-                                                _ => {
-                                                    return Err(
-                                                        EvaluationError::ArgumentTypeMismatch,
-                                                    );
-                                                }
-                                            }
-                                        )?
-                                    }
-                                    "define" => {
-                                        destructure!(
-                                            expr_list,
-                                            [var_name, definition],
-                                            match var_name {
-                                                LispExpr::OpVar(name) => {
-                                                    instructions.push(Instr::PopAndSet(name));
-                                                    instructions.push(
-                                                        Instr::EvalAndPush(definition),
-                                                    );
-                                                }
-                                                _ => {
-                                                    return Err(
-                                                        EvaluationError::ArgumentTypeMismatch,
-                                                    );
-                                                }
-                                            }
-                                        )?
-                                    }
-                                    // Eager argument evaluation: evaluate all arguments before
-                                    // calling the function.
-                                    _ => {
-                                        instructions.push(Instr::EvalFunctionEager(
-                                            func_name,
-                                            expr_list.len(),
-                                        ));
-                                        instructions.extend(expr_list.into_iter().rev().map(
-                                            Instr::EvalAndPush,
-                                        ));
-                                    }
-                                }
-                            }
-                            LispFunc::Custom { arg_count, body } => {
-                                if arg_count != expr_list.len() {
-                                    return Err(EvaluationError::ArgumentCountMismatch);
-                                }
-
-                                instructions.push(Instr::PopState);
-                                instructions.push(Instr::EvalAndPush(*body));
-                                instructions.push(Instr::SetStackPointer(return_values.len()));
-                                instructions.extend(expr_list.into_iter().rev().map(
-                                    Instr::EvalAndPush,
-                                ));
-                            }
-                        }
+                        instructions.push(Instr::EvalFunctionEager(f, expr_list.len()));
+                        instructions.extend(expr_list.into_iter().rev().map(Instr::EvalAndPush));
                     }
                     _ => return Err(EvaluationError::NonFunctionApplication),
                 }
             }
-            Instr::EvalFunctionEager(func_name, arg_count) => {
-                func_match!(&func_name[..], arg_count, [
-                    ("list", _) => {
+            Instr::EvalFunctionEager(func, arg_count) => {
+                match func {
+                    LispFunc::BuiltIn(ref n) if n == "list" => {
                         let len = return_values.len();
                         let new_vec = return_values.split_off(len - arg_count);
                         return_values.push(LispValue::SubValue(new_vec));
-                    },
-                    ("car", 1) => {
-                        unitary_list(&mut return_values, |mut vec| match vec.pop() {
-                            Some(car) => Ok(car),
-                            None => Err(EvaluationError::EmptyList),
-                        })?
-                    },
-                    ("cdr", 1) => {
-                        unitary_list(&mut return_values, |mut vec| match vec.pop() {
-                            Some(_) => Ok(LispValue::SubValue(vec)),
-                            None => Err(EvaluationError::EmptyList),
-                        })?
-                    },
-                    ("null?", 1) => {
-                        unitary_list(
-                            &mut return_values,
-                            |vec| Ok(LispValue::Boolean(vec.is_empty())),
-                        )?
-                    },
-                    ("add1", 1) => {
-                        unitary_int(&mut return_values, |i| Ok(LispValue::Integer(i + 1)))?
-                    },
-                    ("sub1", 1) => {
-                        unitary_int(&mut return_values, |i| if i > 0 {
-                            Ok(LispValue::Integer(i - 1))
+                    }
+                    LispFunc::BuiltIn(ref n) if n == "car" => {
+                        if arg_count == 1 {
+                            unitary_list(&mut return_values, |mut vec| match vec.pop() {
+                                Some(car) => Ok(car),
+                                None => Err(EvaluationError::EmptyList),
+                            })?
                         } else {
-                            Err(EvaluationError::SubZero)
-                        })?
-                    },
-                    ("cons", 2) => {
-                        if let LispValue::SubValue(mut new_vec) = return_values.pop().unwrap() {
-                            new_vec.push(return_values.pop().unwrap());
-                            return_values.push(LispValue::SubValue(new_vec));
-                        } else {
-                            return Err(EvaluationError::ArgumentTypeMismatch);
-                        }
-                    },
-                    ("zero?", 1) => {
-                        unitary_int(&mut return_values, |i| Ok(LispValue::Boolean(i == 0)))?
-                    },
-                    (_, _) => {
-                        // Try to get function from State
-                        if let Some(LispValue::Function(LispFunc::Custom { arg_count: da_arg_count, body, .. })) = state.get_variable_value(&func_name[..]) {
-                            // TODO: deduplicate!
-                            if da_arg_count != arg_count {
-                                return Err(EvaluationError::ArgumentCountMismatch);
-                            }
-
-                            instructions.push(Instr::PopState);
-                            instructions.push(Instr::EvalAndPush(*body));
-                            instructions.push(Instr::SetStackPointer(return_values.len() - da_arg_count));
-                        } else {
-                            return Err(EvaluationError::UnknownVariable(func_name));
+                            return Err(EvaluationError::ArgumentCountMismatch);
                         }
                     }
-                ])
+                    LispFunc::BuiltIn(ref n) if n == "cdr" => {
+                        if arg_count == 1 {
+                            unitary_list(&mut return_values, |mut vec| match vec.pop() {
+                                Some(_) => Ok(LispValue::SubValue(vec)),
+                                None => Err(EvaluationError::EmptyList),
+                            })?
+                        } else {
+                            return Err(EvaluationError::ArgumentCountMismatch);
+                        }
+                    }
+                    LispFunc::BuiltIn(ref n) if n == "null?" => {
+                        if arg_count == 1 {
+                            unitary_list(&mut return_values, |vec| {
+                                Ok(LispValue::Boolean(vec.is_empty()))
+                            })?
+                        } else {
+                            return Err(EvaluationError::ArgumentCountMismatch);
+                        }
+                    }
+                    LispFunc::BuiltIn(ref n) if n == "add1" => {
+                        if arg_count == 1 {
+                            unitary_int(&mut return_values, |i| Ok(LispValue::Integer(i + 1)))?
+                        } else {
+                            return Err(EvaluationError::ArgumentCountMismatch);
+                        }
+                    }
+                    LispFunc::BuiltIn(ref n) if n == "sub1" => {
+                        if arg_count == 1 {
+                            unitary_int(&mut return_values, |i| if i > 0 {
+                                Ok(LispValue::Integer(i - 1))
+                            } else {
+                                Err(EvaluationError::SubZero)
+                            })?
+                        } else {
+                            return Err(EvaluationError::ArgumentCountMismatch);
+                        }
+                    }
+                    LispFunc::BuiltIn(ref n) if n == "cons" => {
+                        if arg_count == 2 {
+                            if let LispValue::SubValue(mut new_vec) = return_values.pop().unwrap() {
+                                new_vec.push(return_values.pop().unwrap());
+                                return_values.push(LispValue::SubValue(new_vec));
+                            } else {
+                                return Err(EvaluationError::ArgumentTypeMismatch);
+                            }
+                        } else {
+                            return Err(EvaluationError::ArgumentCountMismatch);
+                        }
+                    }
+                    LispFunc::BuiltIn(ref n) if n == "zero?" => {
+                        if arg_count == 1 {
+                            unitary_int(&mut return_values, |i| Ok(LispValue::Boolean(i == 0)))?
+                        } else {
+                            return Err(EvaluationError::ArgumentCountMismatch);
+                        }
+                    }
+                    LispFunc::BuiltIn(ref n) => {
+                        return Err(EvaluationError::UnknownVariable(n.clone()))
+                    }
+                    LispFunc::Custom {
+                        arg_count: da_arg_count,
+                        body,
+                    } => {
+                        if da_arg_count != arg_count {
+                            return Err(EvaluationError::ArgumentCountMismatch);
+                        }
+
+                        instructions.push(Instr::PopState);
+                        instructions.push(Instr::EvalAndPush(*body));
+                        instructions.push(Instr::SetStackPointer(
+                            return_values.len() - da_arg_count,
+                        ));
+                    }
+                }
             }
             // Pops boolean value off stack, if true, queue evaluation of
             // first expression, else queue evaluation of the second.

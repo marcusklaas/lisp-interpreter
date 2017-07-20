@@ -84,7 +84,7 @@ pub fn parse_lisp_string(lit: &str) -> Result<LispExpr, ParseError> {
     let result = parse_lisp(&mut tokens);
 
     match tokens.next() {
-        None => result.map(|expr_vec| LispExpr::SubExpr(expr_vec)),
+        None => result.map(|expr_vec| LispExpr::Call(expr_vec, false)),
         Some(_) => Err(ParseError::UnbalancedParens),
     }
 }
@@ -96,7 +96,7 @@ fn parse_lisp(tokens: &mut Tokens) -> Result<Vec<LispExpr>, ParseError> {
 
     while let Some(token) = tokens.next() {
         let next_token = match token {
-            Token::OpenParen => LispExpr::SubExpr(parse_lisp(tokens)?),
+            Token::OpenParen => LispExpr::Call(parse_lisp(tokens)?, false),
             Token::CloseParen => return Ok(stack),
             Token::Integer(l) => LispExpr::Value(LispValue::Integer(l)),
             Token::OpVar(o) => LispExpr::OpVar(o),
@@ -114,7 +114,7 @@ mod tests {
     #[test]
     fn parse_double_parens() {
         let lit = "(())";
-        let expected = Ok(LispExpr::SubExpr(vec![LispExpr::SubExpr(vec![])]));
+        let expected = Ok(LispExpr::Call(vec![LispExpr::Call(vec![], false)], false));
 
         let result = parse_lisp_string(lit);
         assert_eq!(expected, result);
@@ -123,8 +123,9 @@ mod tests {
     #[test]
     fn parse_integer() {
         let lit = "(55)";
-        let expected = Ok(LispExpr::SubExpr(
+        let expected = Ok(LispExpr::Call(
             vec![LispExpr::Value(LispValue::Integer(55))],
+            false,
         ));
 
         let result = parse_lisp_string(lit);
@@ -135,19 +136,28 @@ mod tests {
     fn parse_lisp_string_ok() {
         let lit = "(first (list 1 (+ 2 3) 9))";
 
-        let expected = Ok(LispExpr::SubExpr(vec![
-            LispExpr::OpVar("first".to_owned()),
-            LispExpr::SubExpr(vec![
-                LispExpr::OpVar("list".to_owned()),
-                LispExpr::Value(LispValue::Integer(1)),
-                LispExpr::SubExpr(vec![
-                    LispExpr::OpVar("+".to_owned()),
-                    LispExpr::Value(LispValue::Integer(2)),
-                    LispExpr::Value(LispValue::Integer(3)),
-                ]),
-                LispExpr::Value(LispValue::Integer(9)),
-            ]),
-        ]));
+        let expected = Ok(LispExpr::Call(
+            vec![
+                LispExpr::OpVar("first".to_owned()),
+                LispExpr::Call(
+                    vec![
+                        LispExpr::OpVar("list".to_owned()),
+                        LispExpr::Value(LispValue::Integer(1)),
+                        LispExpr::Call(
+                            vec![
+                                LispExpr::OpVar("+".to_owned()),
+                                LispExpr::Value(LispValue::Integer(2)),
+                                LispExpr::Value(LispValue::Integer(3)),
+                            ],
+                            false
+                        ),
+                        LispExpr::Value(LispValue::Integer(9)),
+                    ],
+                    false
+                ),
+            ],
+            false,
+        ));
 
         let result = parse_lisp_string(lit);
         assert_eq!(expected, result);
