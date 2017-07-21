@@ -27,7 +27,7 @@ These are defined in terms of the built-in functions above.
 
 Example evaluations:
 ```
-> (add1 (add3 3))
+> (add1 (add1 3))
 5
 > (define sub (lambda (x y) (cond (zero? y) x (sub (sub1 x) (sub1 y)))))
 ()
