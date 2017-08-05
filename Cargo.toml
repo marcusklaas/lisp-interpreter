@@ -5,6 +5,10 @@ authors = ["Marcus Klaas <mail@marcusklaas.nl>"]
 
 [dependencies]
 rustyline = "*"
+clippy = {version = "*", optional = true}
+
+[features]
+default = []
 
 [lib]
 name = "yalp"

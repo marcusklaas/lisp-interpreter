@@ -1,3 +1,5 @@
+#![cfg_attr(feature="clippy", feature(plugin))]
+#![cfg_attr(feature="clippy", plugin(clippy))]
 #![feature(test)]
 
 extern crate test;
@@ -45,9 +47,9 @@ impl LispFunc {
 
 impl fmt::Display for LispFunc {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            &LispFunc::BuiltIn(ref name) => write!(f, "{}", name),
-            &LispFunc::Custom {
+        match *self {
+            LispFunc::BuiltIn(ref name) => write!(f, "{}", name),
+            LispFunc::Custom {
                 arg_count,
                 ref body,
             } => write!(f, "{} -> {}", arg_count, body),
@@ -127,11 +129,11 @@ impl LispExpr {
 
 impl fmt::Display for LispExpr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            &LispExpr::Argument(ref offset) => write!(f, "${}", offset),
-            &LispExpr::Value(ref v) => write!(f, "{}", v),
-            &LispExpr::OpVar(ref name) => write!(f, "{}", name),
-            &LispExpr::Call(ref expr_vec, is_tail_call) => {
+        match *self {
+            LispExpr::Argument(ref offset) => write!(f, "${}", offset),
+            LispExpr::Value(ref v) => write!(f, "{}", v),
+            LispExpr::OpVar(ref name) => write!(f, "{}", name),
+            LispExpr::Call(ref expr_vec, is_tail_call) => {
                 if is_tail_call {
                     write!(f, "t")?;
                 }
@@ -176,12 +178,12 @@ pub enum LispValue {
 
 impl fmt::Display for LispValue {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            &LispValue::Function(ref func) => write!(f, "func[{}]", func),
-            &LispValue::Integer(i) => write!(f, "{}", i),
-            &LispValue::Boolean(true) => write!(f, "#t"),
-            &LispValue::Boolean(false) => write!(f, "#f"),
-            &LispValue::SubValue(ref vec) => {
+        match *self {
+            LispValue::Function(ref func) => write!(f, "func[{}]", func),
+            LispValue::Integer(i) => write!(f, "{}", i),
+            LispValue::Boolean(true) => write!(f, "#t"),
+            LispValue::Boolean(false) => write!(f, "#f"),
+            LispValue::SubValue(ref vec) => {
                 write!(f, "(")?;
 
                 for (idx, val) in vec.iter().enumerate() {

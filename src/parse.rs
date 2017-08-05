@@ -23,7 +23,7 @@ struct Tokens<'a> {
 }
 
 impl<'x> Tokens<'x> {
-    fn from_str<'a>(literal: &'a str) -> Tokens<'a> {
+    fn from_str(literal: &str) -> Tokens {
         Tokens { chars: literal.chars().peekable() }
     }
 }

@@ -62,9 +62,7 @@ fn unitary_int<F: Fn(u64) -> Result<LispValue, EvaluationError>>(
 ) -> Result<(), EvaluationError> {
     match stack.pop().unwrap() {
         LispValue::Integer(i) => Ok(stack.push(f(i)?)),
-        _ => {
-            return Err(EvaluationError::ArgumentTypeMismatch);
-        }
+        _ => Err(EvaluationError::ArgumentTypeMismatch),
     }
 }
 
@@ -74,7 +72,7 @@ fn unitary_list<F: Fn(Vec<LispValue>) -> Result<LispValue, EvaluationError>>(
 ) -> Result<(), EvaluationError> {
     match stack.pop().unwrap() {
         LispValue::SubValue(v) => Ok(stack.push(f(v)?)),
-        _ => return Err(EvaluationError::ArgumentTypeMismatch),
+        _ => Err(EvaluationError::ArgumentTypeMismatch),
     }
 }
 
@@ -174,7 +172,7 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                                     let walked_body =
                                         body.replace_args(&return_values[stack_pointer..]);
 
-                                    let f = LispFunc::new_custom(args, walked_body, &state);
+                                    let f = LispFunc::new_custom(args, walked_body, state);
 
                                     return_values.push(LispValue::Function(f));
                                 }
@@ -314,23 +312,21 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                             return_values.push(LispValue::Function(continuation));
                         }
                         // Exactly right number of arguments. Let's evaluate.
-                        else {
-                            if is_tail_call {
-                                // Remove old arguments of the stack.
-                                // FIXME: this should be done more efficiently
-                                let current_pointer = *stack_pointers.last().unwrap();
-                                let cnt = return_values.len() - arg_count - current_pointer;
-                                for _ in 0..cnt {
-                                    return_values.remove(current_pointer);
-                                }
-                                instructions.push(Instr::EvalAndPush(*body));
-                            } else {
-                                instructions.push(Instr::PopState);
-                                instructions.push(Instr::EvalAndPush(*body));
-                                instructions.push(Instr::SetStackPointer(
-                                    return_values.len() - arg_count,
-                                ));
+                        else if is_tail_call {
+                            // Remove old arguments of the stack.
+                            // FIXME: this should be done more efficiently
+                            let current_pointer = *stack_pointers.last().unwrap();
+                            let cnt = return_values.len() - arg_count - current_pointer;
+                            for _ in 0..cnt {
+                                return_values.remove(current_pointer);
                             }
+                            instructions.push(Instr::EvalAndPush(*body));
+                        } else {
+                            instructions.push(Instr::PopState);
+                            instructions.push(Instr::EvalAndPush(*body));
+                            instructions.push(Instr::SetStackPointer(
+                                return_values.len() - arg_count,
+                            ));
                         }
                     }
                 }
@@ -352,8 +348,8 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
         }
     }
 
-    assert!(stack_pointers == vec![0]);
+    assert_eq!(stack_pointers, vec![0]);
     assert!(instructions.is_empty());
-    assert!(return_values.len() == 1);
+    assert_eq!(return_values.len(), 1);
     Ok(return_values.pop().unwrap())
 }
