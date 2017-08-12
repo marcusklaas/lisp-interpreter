@@ -54,6 +54,17 @@ enum Instr {
     // Function, Argument Count, Tail call
     EvalFunctionEager(LispFunc, usize, bool),
     SetStackPointer(usize),
+
+
+    // Integer specialization instructions
+
+
+    // Increment integer at the top of the int stack
+    IntIncrement,
+    // Pop int from int stack onto the value stack
+    IntPop,
+    // Push integer onto the int stack
+    IntPush(u64),
 }
 
 fn unitary_int<F: Fn(u64) -> Result<LispValue, EvaluationError>>(
@@ -95,12 +106,29 @@ macro_rules! destructure {
 
 pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, EvaluationError> {
     let mut return_values: Vec<LispValue> = Vec::new();
+    let mut int_stack: Vec<u64> = Vec::new();
     let mut instructions = vec![Instr::EvalAndPush(expr.clone())];
     let mut stack_pointers = vec![];
     let mut current_stack = 0;
 
     while let Some(instr) = instructions.pop() {
         match instr {
+            Instr::IntIncrement => {
+                // This is a specialized instruction. Specialized instructions
+                // can make assumptions about the state of the program.
+                // For example, this assumes that the integer stack is not empty.
+                // It is up to the scheduler of this instruction to verify that
+                // this conditions holds.
+                let val = int_stack.pop().unwrap();
+                int_stack.push(val + 1);
+            }
+            Instr::IntPop => {
+                let val = int_stack.pop().unwrap();
+                return_values.push(LispValue::Integer(val));
+            }
+            Instr::IntPush(i) => {
+                int_stack.push(i);
+            }
             Instr::SetStackPointer(p) => {
                 stack_pointers.push(current_stack);
                 current_stack = p;
@@ -250,7 +278,13 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                     }
                     LispFunc::BuiltIn(ref n) if n == "add1" => {
                         if arg_count == 1 {
-                            unitary_int(&mut return_values, |i| Ok(LispValue::Integer(i + 1)))?
+                            if let LispValue::Integer(i) = return_values.pop().unwrap() {
+                                instructions.push(Instr::IntPop);
+                                instructions.push(Instr::IntIncrement);
+                                instructions.push(Instr::IntPush(i));
+                            } else {
+                                return Err(EvaluationError::ArgumentTypeMismatch);
+                            }
                         } else {
                             return Err(EvaluationError::ArgumentCountMismatch);
                         }
