@@ -96,25 +96,28 @@ macro_rules! destructure {
 pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, EvaluationError> {
     let mut return_values: Vec<LispValue> = Vec::new();
     let mut instructions = vec![Instr::EvalAndPush(expr.clone())];
-    let mut stack_pointers = vec![0usize];
+    let mut stack_pointers = vec![];
+    let mut current_stack = 0;
 
     while let Some(instr) = instructions.pop() {
         match instr {
             Instr::SetStackPointer(p) => {
-                stack_pointers.push(p);
+                stack_pointers.push(current_stack);
+                current_stack = p;
             }
             Instr::PopState => {
                 let val = return_values.pop().unwrap();
-                let pointer = stack_pointers.pop().unwrap();
-                return_values.truncate(pointer);
+
+                return_values.truncate(current_stack);
                 return_values.push(val);
+
+                current_stack = stack_pointers.pop().unwrap();
             }
             Instr::EvalAndPush(expr) => {
                 match expr {
                     LispExpr::Argument(offset) => {
-                        let pointer = stack_pointers.last().unwrap();
-                        let index = pointer + offset;
-                        let value: LispValue = (&return_values[index]).clone();
+                        let index = current_stack + offset;
+                        let value = return_values[index].clone();
                         return_values.push(value);
                     }
                     LispExpr::Value(v) => {
@@ -164,13 +167,12 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                                         })
                                         .collect::<Result<Vec<_>, _>>()?;
 
-                                    let stack_pointer = *stack_pointers.last().unwrap();
                                     // If there are any references to function arguments in
                                     // the lambda body, we should resolve them before
                                     // creating the lambda.
                                     // This enables us to do closures.
                                     let walked_body =
-                                        body.replace_args(&return_values[stack_pointer..]);
+                                        body.replace_args(&return_values[current_stack..]);
 
                                     let f = LispFunc::new_custom(args, walked_body, state);
 
@@ -301,24 +303,22 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                                 arg_count: da_arg_count,
                                 body: body,
                             };
-                            let stack_pointer = *stack_pointers.last().unwrap();
                             let continuation = LispFunc::create_continuation(
                                 orig_func,
                                 da_arg_count,
                                 arg_count,
-                                &return_values[stack_pointer..],
+                                &return_values[current_stack..],
                             );
-                            return_values.truncate(stack_pointer);
+                            return_values.truncate(current_stack);
                             return_values.push(LispValue::Function(continuation));
                         }
                         // Exactly right number of arguments. Let's evaluate.
                         else if is_tail_call {
                             // Remove old arguments of the stack.
                             // FIXME: this should be done more efficiently
-                            let current_pointer = *stack_pointers.last().unwrap();
-                            let cnt = return_values.len() - arg_count - current_pointer;
+                            let cnt = return_values.len() - arg_count - current_stack;
                             for _ in 0..cnt {
-                                return_values.remove(current_pointer);
+                                return_values.remove(current_stack);
                             }
                             instructions.push(Instr::EvalAndPush(*body));
                         } else {
@@ -348,7 +348,8 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
         }
     }
 
-    assert_eq!(stack_pointers, vec![0]);
+    assert!(stack_pointers.is_empty());
+    assert_eq!(current_stack, 0);
     assert!(instructions.is_empty());
     assert_eq!(return_values.len(), 1);
     Ok(return_values.pop().unwrap())
