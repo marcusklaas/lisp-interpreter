@@ -504,6 +504,17 @@ mod tests {
         );
     }
 
+    #[test]
+    fn zero_arg_function_call() {
+        check_lisp_err(
+            vec![
+                "(define add (lambda (x y) (cond (zero? y) x (add (add1 x) (sub1 y)))))",
+                "(add)",
+            ],
+            LispError::Evaluation(EvaluationError::ArgumentCountMismatch),
+        );
+    }
+
     #[bench]
     fn bench_add(b: &mut super::test::Bencher) {
         b.iter(|| {
