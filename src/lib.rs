@@ -13,7 +13,7 @@ use evaluator::State;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LispFunc {
-    BuiltIn(String),
+    BuiltIn(&'static str),
     Custom {
         arg_count: usize,
         body: Box<LispExpr>,
@@ -58,6 +58,8 @@ impl fmt::Display for LispFunc {
     }
 }
 
+// TODO: expressions with opvars / arguments should probably have their
+//       own type at some point.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum LispExpr {
     Value(LispValue),
@@ -94,14 +96,11 @@ impl LispExpr {
                 let do_tail_call = match (can_tail_call, vec.get(0)) {
                     // Special case for `cond`. Even though it is a function,
                     // its child expressions can still be tail calls.
-                    (true, Some(&LispExpr::OpVar(ref name))) |
+                    (true, Some(&LispExpr::OpVar(ref name))) => name == "cond" && vec.len() == 4,
                     (
                         true,
-                        Some(&LispExpr::Value(LispValue::Function(LispFunc::BuiltIn(ref name)))),
-                    ) if name == "cond" && vec.len() == 4 =>
-                    {
-                        true
-                    }
+                        Some(&LispExpr::Value(LispValue::Function(LispFunc::BuiltIn("cond")))),
+                    ) => vec.len() == 4,
                     _ => false,
                 };
                 let tail_call_iter = (0..).map(|i| (i == 2 || i == 3) && do_tail_call);
