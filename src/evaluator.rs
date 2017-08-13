@@ -55,7 +55,6 @@ enum Instr {
     EvalFunctionEager(LispFunc, usize, bool),
     SetStackPointer(usize),
 
-
     // Integer specialization instructions
 
 
@@ -151,13 +150,11 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                     LispExpr::Value(v) => {
                         return_values.push(v);
                     }
-                    LispExpr::OpVar(ref n) => {
-                        if let Some(v) = state.get_variable_value(n) {
-                            return_values.push(v);
-                        } else {
-                            return Err(EvaluationError::UnknownVariable(n.clone()));
-                        }
-                    }
+                    LispExpr::OpVar(ref n) => if let Some(v) = state.get_variable_value(n) {
+                        return_values.push(v);
+                    } else {
+                        return Err(EvaluationError::UnknownVariable(n.clone()));
+                    },
                     LispExpr::Call(mut expr_vec, is_tail_call) => {
                         // step 1: remove head expression
                         let head_expr = expr_vec.remove(0);
@@ -230,11 +227,8 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                     // Eager argument evaluation: evaluate all arguments before
                     // calling the function.
                     LispValue::Function(f) => {
-                        instructions.push(Instr::EvalFunctionEager(
-                            f,
-                            expr_list.len(),
-                            is_tail_call,
-                        ));
+                        instructions
+                            .push(Instr::EvalFunctionEager(f, expr_list.len(), is_tail_call));
                         instructions.extend(expr_list.into_iter().rev().map(Instr::EvalAndPush));
                     }
                     _ => return Err(EvaluationError::NonFunctionApplication),
@@ -247,78 +241,64 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                         let new_vec = return_values.split_off(len - arg_count);
                         return_values.push(LispValue::SubValue(new_vec));
                     }
-                    LispFunc::BuiltIn(ref n) if n == "car" => {
-                        if arg_count == 1 {
-                            unitary_list(&mut return_values, |mut vec| match vec.pop() {
-                                Some(car) => Ok(car),
-                                None => Err(EvaluationError::EmptyList),
-                            })?
+                    LispFunc::BuiltIn(ref n) if n == "car" => if arg_count == 1 {
+                        unitary_list(&mut return_values, |mut vec| match vec.pop() {
+                            Some(car) => Ok(car),
+                            None => Err(EvaluationError::EmptyList),
+                        })?
+                    } else {
+                        return Err(EvaluationError::ArgumentCountMismatch);
+                    },
+                    LispFunc::BuiltIn(ref n) if n == "cdr" => if arg_count == 1 {
+                        unitary_list(&mut return_values, |mut vec| match vec.pop() {
+                            Some(_) => Ok(LispValue::SubValue(vec)),
+                            None => Err(EvaluationError::EmptyList),
+                        })?
+                    } else {
+                        return Err(EvaluationError::ArgumentCountMismatch);
+                    },
+                    LispFunc::BuiltIn(ref n) if n == "null?" => if arg_count == 1 {
+                        unitary_list(&mut return_values, |vec| {
+                            Ok(LispValue::Boolean(vec.is_empty()))
+                        })?
+                    } else {
+                        return Err(EvaluationError::ArgumentCountMismatch);
+                    },
+                    LispFunc::BuiltIn(ref n) if n == "add1" => if arg_count == 1 {
+                        if let LispValue::Integer(i) = return_values.pop().unwrap() {
+                            instructions.push(Instr::IntPop);
+                            instructions.push(Instr::IntIncrement);
+                            instructions.push(Instr::IntPush(i));
                         } else {
-                            return Err(EvaluationError::ArgumentCountMismatch);
+                            return Err(EvaluationError::ArgumentTypeMismatch);
                         }
-                    }
-                    LispFunc::BuiltIn(ref n) if n == "cdr" => {
-                        if arg_count == 1 {
-                            unitary_list(&mut return_values, |mut vec| match vec.pop() {
-                                Some(_) => Ok(LispValue::SubValue(vec)),
-                                None => Err(EvaluationError::EmptyList),
-                            })?
+                    } else {
+                        return Err(EvaluationError::ArgumentCountMismatch);
+                    },
+                    LispFunc::BuiltIn(ref n) if n == "sub1" => if arg_count == 1 {
+                        unitary_int(&mut return_values, |i| if i > 0 {
+                            Ok(LispValue::Integer(i - 1))
                         } else {
-                            return Err(EvaluationError::ArgumentCountMismatch);
-                        }
-                    }
-                    LispFunc::BuiltIn(ref n) if n == "null?" => {
-                        if arg_count == 1 {
-                            unitary_list(&mut return_values, |vec| {
-                                Ok(LispValue::Boolean(vec.is_empty()))
-                            })?
+                            Err(EvaluationError::SubZero)
+                        })?
+                    } else {
+                        return Err(EvaluationError::ArgumentCountMismatch);
+                    },
+                    LispFunc::BuiltIn(ref n) if n == "cons" => if arg_count == 2 {
+                        if let LispValue::SubValue(mut new_vec) = return_values.pop().unwrap() {
+                            new_vec.push(return_values.pop().unwrap());
+                            return_values.push(LispValue::SubValue(new_vec));
                         } else {
-                            return Err(EvaluationError::ArgumentCountMismatch);
+                            return Err(EvaluationError::ArgumentTypeMismatch);
                         }
-                    }
-                    LispFunc::BuiltIn(ref n) if n == "add1" => {
-                        if arg_count == 1 {
-                            if let LispValue::Integer(i) = return_values.pop().unwrap() {
-                                instructions.push(Instr::IntPop);
-                                instructions.push(Instr::IntIncrement);
-                                instructions.push(Instr::IntPush(i));
-                            } else {
-                                return Err(EvaluationError::ArgumentTypeMismatch);
-                            }
-                        } else {
-                            return Err(EvaluationError::ArgumentCountMismatch);
-                        }
-                    }
-                    LispFunc::BuiltIn(ref n) if n == "sub1" => {
-                        if arg_count == 1 {
-                            unitary_int(&mut return_values, |i| if i > 0 {
-                                Ok(LispValue::Integer(i - 1))
-                            } else {
-                                Err(EvaluationError::SubZero)
-                            })?
-                        } else {
-                            return Err(EvaluationError::ArgumentCountMismatch);
-                        }
-                    }
-                    LispFunc::BuiltIn(ref n) if n == "cons" => {
-                        if arg_count == 2 {
-                            if let LispValue::SubValue(mut new_vec) = return_values.pop().unwrap() {
-                                new_vec.push(return_values.pop().unwrap());
-                                return_values.push(LispValue::SubValue(new_vec));
-                            } else {
-                                return Err(EvaluationError::ArgumentTypeMismatch);
-                            }
-                        } else {
-                            return Err(EvaluationError::ArgumentCountMismatch);
-                        }
-                    }
-                    LispFunc::BuiltIn(ref n) if n == "zero?" => {
-                        if arg_count == 1 {
-                            unitary_int(&mut return_values, |i| Ok(LispValue::Boolean(i == 0)))?
-                        } else {
-                            return Err(EvaluationError::ArgumentCountMismatch);
-                        }
-                    }
+                    } else {
+                        return Err(EvaluationError::ArgumentCountMismatch);
+                    },
+                    LispFunc::BuiltIn(ref n) if n == "zero?" => if arg_count == 1 {
+                        unitary_int(&mut return_values, |i| Ok(LispValue::Boolean(i == 0)))?
+                    } else {
+                        return Err(EvaluationError::ArgumentCountMismatch);
+                    },
                     LispFunc::BuiltIn(ref n) => {
                         return Err(EvaluationError::UnknownVariable(n.clone()))
                     }
@@ -358,9 +338,8 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                         } else {
                             instructions.push(Instr::PopState);
                             instructions.push(Instr::EvalAndPush(*body));
-                            instructions.push(Instr::SetStackPointer(
-                                return_values.len() - arg_count,
-                            ));
+                            instructions
+                                .push(Instr::SetStackPointer(return_values.len() - arg_count));
                         }
                     }
                 }

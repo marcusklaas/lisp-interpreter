@@ -24,7 +24,9 @@ struct Tokens<'a> {
 
 impl<'x> Tokens<'x> {
     fn from_str(literal: &str) -> Tokens {
-        Tokens { chars: literal.chars().peekable() }
+        Tokens {
+            chars: literal.chars().peekable(),
+        }
     }
 }
 
@@ -149,11 +151,11 @@ mod tests {
                                 LispExpr::Value(LispValue::Integer(2)),
                                 LispExpr::Value(LispValue::Integer(3)),
                             ],
-                            false
+                            false,
                         ),
                         LispExpr::Value(LispValue::Integer(9)),
                     ],
-                    false
+                    false,
                 ),
             ],
             false,

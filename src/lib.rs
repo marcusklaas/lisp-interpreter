@@ -1,5 +1,5 @@
-#![cfg_attr(feature="clippy", feature(plugin))]
-#![cfg_attr(feature="clippy", plugin(clippy))]
+#![cfg_attr(feature = "clippy", feature(plugin))]
+#![cfg_attr(feature = "clippy", plugin(clippy))]
 #![feature(test)]
 
 extern crate test;
@@ -94,9 +94,13 @@ impl LispExpr {
                     // Special case for `cond`. Even though it is a function,
                     // its child expressions can still be tail calls.
                     (true, Some(&LispExpr::OpVar(ref name))) |
-                    (true,
-                     Some(&LispExpr::Value(LispValue::Function(LispFunc::BuiltIn(ref name)))))
-                        if name == "cond" && vec.len() == 4 => true,
+                    (
+                        true,
+                        Some(&LispExpr::Value(LispValue::Function(LispFunc::BuiltIn(ref name)))),
+                    ) if name == "cond" && vec.len() == 4 =>
+                    {
+                        true
+                    }
                     _ => false,
                 };
                 let tail_call_iter = (0..).map(|i| (i == 2 || i == 3) && do_tail_call);
@@ -116,12 +120,10 @@ impl LispExpr {
     pub fn replace_args(self, stack: &[LispValue]) -> LispExpr {
         match self {
             LispExpr::Argument(index) => LispExpr::Value(stack[index].clone()),
-            LispExpr::Call(vec, is_tail_call) => {
-                LispExpr::Call(
-                    vec.into_iter().map(|e| e.replace_args(stack)).collect(),
-                    is_tail_call,
-                )
-            }
+            LispExpr::Call(vec, is_tail_call) => LispExpr::Call(
+                vec.into_iter().map(|e| e.replace_args(stack)).collect(),
+                is_tail_call,
+            ),
             x => x,
         }
     }
@@ -223,7 +225,7 @@ impl fmt::Display for LispValue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::parse::{ParseError, parse_lisp_string};
+    use super::parse::{parse_lisp_string, ParseError};
     use super::evaluator::State;
     use std::convert::From;
 
@@ -285,7 +287,7 @@ mod tests {
                         LispExpr::Value(LispValue::Integer(5)),
                         LispExpr::OpVar("y".into()),
                     ],
-                    false
+                    false,
                 ),
             ],
             false,
@@ -302,7 +304,7 @@ mod tests {
                         LispExpr::Value(LispValue::Integer(5)),
                         LispExpr::Argument(1),
                     ],
-                    false
+                    false,
                 ),
             ],
             true,
@@ -501,6 +503,18 @@ mod tests {
                 "(sum2and5 10 20)",
             ],
             "35",
+        );
+    }
+
+    #[test]
+    fn range() {
+        check_lisp_ok(
+            vec![
+                "(define > (lambda (x y) (cond (zero? x) #f (cond (zero? y) #t (> (sub1 x) (sub1 y))))))",
+                "(define range (lambda (start end) (cond (> end start) (cons end (range start (sub1 end))) (list start))))",
+                "(range 1 5)",
+            ],
+            "(1 2 3 4 5)",
         );
     }
 

@@ -1,5 +1,5 @@
-#![cfg_attr(feature="clippy", feature(plugin))]
-#![cfg_attr(feature="clippy", plugin(clippy))]
+#![cfg_attr(feature = "clippy", feature(plugin))]
+#![cfg_attr(feature = "clippy", plugin(clippy))]
 
 extern crate yalp;
 extern crate rustyline;
@@ -17,6 +17,7 @@ const PRELUDE: &'static [&'static str] = &[
     "(define > (lambda (x y) (cond (zero? x) #f (cond (zero? y) #t (> (sub1 x) (sub1 y))))))",
     "(define and (lambda (t1 t2) (cond t1 t2 #f)))",
     "(define append (lambda (l1 l2) (cond (null? l2) l1 (cons (car l2) (append l1 (cdr l2))))))",
+    "(define range (lambda (start end) (cond (> end start) (cons end (range start (sub1 end))) (list start))))",
     "(define sort (lambda (l) (cond (null? l) l (append (cons (car l) (sort (filter (lambda (x) (not (> x (car l)))) (cdr l)))) (sort (filter (lambda (x) (> x (car l))) l))))))",
 ];
 
@@ -26,9 +27,8 @@ fn main() {
 
     for def in PRELUDE {
         let parse_res = parse_lisp_string(def).expect("Prelude statement failed to parse!");
-        yalp::evaluator::eval(&parse_res, &mut state).expect(
-            "Prelude statement failed to execute!",
-        );
+        yalp::evaluator::eval(&parse_res, &mut state)
+            .expect("Prelude statement failed to execute!");
     }
 
     loop {
