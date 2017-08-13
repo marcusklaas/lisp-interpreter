@@ -168,12 +168,31 @@ pub enum EvaluationError {
     TestOneTwoThree,
 }
 
+enum ValueType {
+    Boolean,
+    Integer,
+    List,
+    Function,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LispValue {
     Boolean(bool),
     Integer(u64),
     Function(LispFunc),
+    // TODO: this should be renamed to List
     SubValue(Vec<LispValue>),
+}
+
+impl LispValue {
+    fn get_type(&self) -> ValueType {
+        match *self {
+            LispValue::Boolean(..) => ValueType::Boolean,
+            LispValue::Integer(..) => ValueType::Integer,
+            LispValue::Function(..) => ValueType::Function,
+            LispValue::SubValue(..) => ValueType::List,
+        }
+    }
 }
 
 impl fmt::Display for LispValue {
