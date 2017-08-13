@@ -5,6 +5,7 @@ authors = ["Marcus Klaas <mail@marcusklaas.nl>"]
 
 [dependencies]
 rustyline = "*"
+smallvec = "*"
 clippy = {version = "*", optional = true}
 
 [features]

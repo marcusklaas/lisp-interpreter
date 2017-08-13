@@ -2,6 +2,8 @@ use super::*;
 use std::collections::HashMap;
 use std::iter;
 
+use smallvec::SmallVec;
+
 #[derive(Debug, Clone)]
 pub struct State {
     pub bound: HashMap<String, LispValue>,
@@ -104,12 +106,32 @@ macro_rules! destructure {
     };
 }
 
+// TODO: we could pack many more value types
+// into 32 bits - but this will do for now. Plus, the semantics
+// are nice now
+#[derive(Hash, PartialEq, Eq)]
+struct ArgTypes {
+    repr: SmallVec<[ValueType; 4]>,
+}
+
+impl ArgTypes {
+    fn from_type_iterator<I: Iterator<Item=ValueType>>(iter: I) -> ArgTypes {
+        let mut repr = SmallVec::new();
+        repr.extend(iter);
+
+        ArgTypes {
+            repr: repr,
+        }
+    }
+}
+
 pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, EvaluationError> {
     let mut return_values: Vec<LispValue> = Vec::new();
     let mut int_stack: Vec<u64> = Vec::new();
     let mut instructions = vec![Instr::EvalAndPush(expr.clone())];
     let mut stack_pointers = vec![];
     let mut current_stack = 0;
+    let mut specializations: HashMap<(LispExpr, ArgTypes), LispFunc> = HashMap::new();
 
     while let Some(instr) = instructions.pop() {
         match instr {

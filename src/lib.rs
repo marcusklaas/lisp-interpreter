@@ -3,6 +3,7 @@
 #![feature(test, splice)]
 
 extern crate test;
+extern crate smallvec;
 
 pub mod parse;
 pub mod evaluator;
@@ -10,7 +11,7 @@ pub mod evaluator;
 use std::fmt;
 use evaluator::State;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LispFunc {
     BuiltIn(String),
     Custom {
@@ -57,7 +58,7 @@ impl fmt::Display for LispFunc {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum LispExpr {
     Value(LispValue),
     OpVar(String),
@@ -170,6 +171,7 @@ pub enum EvaluationError {
     TestOneTwoThree,
 }
 
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
 enum ValueType {
     Boolean,
     Integer,
@@ -177,7 +179,7 @@ enum ValueType {
     Function,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LispValue {
     Boolean(bool),
     Integer(u64),
