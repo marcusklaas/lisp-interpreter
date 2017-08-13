@@ -125,12 +125,27 @@ impl ArgTypes {
     }
 }
 
+enum SpecializedExpr {}
+
+struct Specialization {
+    body: SpecializedExpr,
+    returnType: ValueType,
+}
+
 pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, EvaluationError> {
     let mut return_values: Vec<LispValue> = Vec::new();
     let mut int_stack: Vec<u64> = Vec::new();
     let mut instructions = vec![Instr::EvalAndPush(expr.clone())];
     let mut stack_pointers = vec![];
     let mut current_stack = 0;
+    // FIXME: maybe this should map to Option<LispFunc>, where a None would
+    //        signal that the body cannot be specialized to these types. this
+    //        would prevent unspecializable combinations from being tried over
+    //        and over needlessly.
+    //        but this optimization is probably premature at this point.
+
+    // FIXME2: consider having functions manage their own specializations.
+    //         probably through an Rc<RefCell<HashMap<ArgTypes, Specialized>>> 
     let mut specializations: HashMap<(LispExpr, ArgTypes), LispFunc> = HashMap::new();
 
     while let Some(instr) = instructions.pop() {
@@ -205,30 +220,27 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                         destructure!(
                             expr_list,
                             [arg_list, body],
-                            match arg_list {
-                                LispExpr::Call(arg_vec, _is_tail_call) => {
-                                    let args = arg_vec
-                                        .into_iter()
-                                        .map(|expr| match expr {
-                                            LispExpr::OpVar(name) => Ok(name),
-                                            _ => Err(EvaluationError::MalformedDefinition),
-                                        })
-                                        .collect::<Result<Vec<_>, _>>()?;
+                            if let LispExpr::Call(arg_vec, _is_tail_call) = arg_list {
+                                let args = arg_vec
+                                    .into_iter()
+                                    .map(|expr| match expr {
+                                        LispExpr::OpVar(name) => Ok(name),
+                                        _ => Err(EvaluationError::MalformedDefinition),
+                                    })
+                                    .collect::<Result<Vec<_>, _>>()?;
 
-                                    // If there are any references to function arguments in
-                                    // the lambda body, we should resolve them before
-                                    // creating the lambda.
-                                    // This enables us to do closures.
-                                    let walked_body =
-                                        body.replace_args(&return_values[current_stack..]);
+                                // If there are any references to function arguments in
+                                // the lambda body, we should resolve them before
+                                // creating the lambda.
+                                // This enables us to do closures.
+                                let walked_body =
+                                    body.replace_args(&return_values[current_stack..]);
 
-                                    let f = LispFunc::new_custom(args, walked_body, state);
+                                let f = LispFunc::new_custom(args, walked_body, state);
 
-                                    return_values.push(LispValue::Function(f));
-                                }
-                                _ => {
-                                    return Err(EvaluationError::ArgumentTypeMismatch);
-                                }
+                                return_values.push(LispValue::Function(f));
+                            } else {
+                                return Err(EvaluationError::ArgumentTypeMismatch);
                             }
                         )?
                     }
@@ -236,14 +248,11 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                         destructure!(
                             expr_list,
                             [var_name, definition],
-                            match var_name {
-                                LispExpr::OpVar(name) => {
-                                    instructions.push(Instr::PopAndSet(name));
-                                    instructions.push(Instr::EvalAndPush(definition));
-                                }
-                                _ => {
-                                    return Err(EvaluationError::ArgumentTypeMismatch);
-                                }
+                            if let LispExpr::OpVar(name) = var_name {
+                                instructions.push(Instr::PopAndSet(name));
+                                instructions.push(Instr::EvalAndPush(definition));
+                            } else {
+                                return Err(EvaluationError::ArgumentTypeMismatch);
                             }
                         )?
                     }

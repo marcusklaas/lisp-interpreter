@@ -58,6 +58,8 @@ impl fmt::Display for LispFunc {
     }
 }
 
+// TODO: expressions with opvars / arguments should probably have their
+//       own type at some point.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum LispExpr {
     Value(LispValue),
