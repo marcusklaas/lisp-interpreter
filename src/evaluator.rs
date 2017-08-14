@@ -26,7 +26,7 @@ impl State {
                 "lambda",
                 "list",
             ].into_iter()
-                .map(|x| (x, LispValue::Function(LispFunc::BuiltIn(x))))
+                .map(|x| (x, LispValue::Function(Rc::new(LispFunc::BuiltIn(x)))))
                 .into_iter()
                 .chain(
                     vec![
@@ -56,7 +56,7 @@ enum Instr {
     PopAndSet(String),
     PopState,
     // Function, Argument Count, Tail call
-    EvalFunctionEager(LispFunc, usize, bool),
+    EvalFunctionEager(Rc<LispFunc>, usize, bool),
     SetStackPointer(usize),
 
     // Integer specialization instructions
@@ -225,65 +225,68 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
             }
             // Pops a function off the value stack and applies it
             Instr::EvalFunction(expr_list, is_tail_call) => {
-                match return_values.pop().unwrap() {
-                    LispValue::Function(LispFunc::BuiltIn("cond")) => {
-                        destructure!(expr_list, [boolean, true_expr, false_expr], {
-                            // Queue condition evaluation
-                            instructions.push(Instr::PopCondPush(true_expr, false_expr));
-                            // Queue Boolean value
-                            instructions.push(Instr::EvalAndPush(boolean));
-                        })?
-                    }
-                    LispValue::Function(LispFunc::BuiltIn("lambda")) => {
-                        destructure!(
+               if let LispValue::Function(rc) = return_values.pop().unwrap() {
+                    match *rc {
+                        LispFunc::BuiltIn("cond") => {
+                            destructure!(expr_list, [boolean, true_expr, false_expr], {
+                                // Queue condition evaluation
+                                instructions.push(Instr::PopCondPush(true_expr, false_expr));
+                                // Queue Boolean value
+                                instructions.push(Instr::EvalAndPush(boolean));
+                            })?
+                        }
+                        LispFunc::BuiltIn("lambda") => {
+                            destructure!(
+                                expr_list,
+                                [arg_list, body],
+                                if let LispExpr::Call(arg_vec, _is_tail_call) = arg_list {
+                                    let args = arg_vec
+                                        .into_iter()
+                                        .map(|expr| match expr {
+                                            LispExpr::OpVar(name) => Ok(name),
+                                            _ => Err(EvaluationError::MalformedDefinition),
+                                        })
+                                        .collect::<Result<Vec<_>, _>>()?;
+
+                                    // If there are any references to function arguments in
+                                    // the lambda body, we should resolve them before
+                                    // creating the lambda.
+                                    // This enables us to do closures.
+                                    let walked_body =
+                                        body.replace_args(&return_values[current_stack..]);
+
+                                    let f = LispFunc::new_custom(args, walked_body, state);
+
+                                    return_values.push(LispValue::Function(Rc::new(f)));
+                                } else {
+                                    return Err(EvaluationError::ArgumentTypeMismatch);
+                                }
+                            )?
+                        }
+                        LispFunc::BuiltIn("define") => destructure!(
                             expr_list,
-                            [arg_list, body],
-                            if let LispExpr::Call(arg_vec, _is_tail_call) = arg_list {
-                                let args = arg_vec
-                                    .into_iter()
-                                    .map(|expr| match expr {
-                                        LispExpr::OpVar(name) => Ok(name),
-                                        _ => Err(EvaluationError::MalformedDefinition),
-                                    })
-                                    .collect::<Result<Vec<_>, _>>()?;
-
-                                // If there are any references to function arguments in
-                                // the lambda body, we should resolve them before
-                                // creating the lambda.
-                                // This enables us to do closures.
-                                let walked_body =
-                                    body.replace_args(&return_values[current_stack..]);
-
-                                let f = LispFunc::new_custom(args, walked_body, state);
-
-                                return_values.push(LispValue::Function(f));
+                            [var_name, definition],
+                            if let LispExpr::OpVar(name) = var_name {
+                                instructions.push(Instr::PopAndSet(name));
+                                instructions.push(Instr::EvalAndPush(definition));
                             } else {
                                 return Err(EvaluationError::ArgumentTypeMismatch);
                             }
-                        )?
-                    }
-                    LispValue::Function(LispFunc::BuiltIn("define")) => destructure!(
-                        expr_list,
-                        [var_name, definition],
-                        if let LispExpr::OpVar(name) = var_name {
-                            instructions.push(Instr::PopAndSet(name));
-                            instructions.push(Instr::EvalAndPush(definition));
-                        } else {
-                            return Err(EvaluationError::ArgumentTypeMismatch);
+                        )?,
+                        // Eager argument evaluation: evaluate all arguments before
+                        // calling the function.
+                        _ => {
+                            instructions
+                                .push(Instr::EvalFunctionEager(rc.clone(), expr_list.len(), is_tail_call));
+                            instructions.extend(expr_list.into_iter().rev().map(Instr::EvalAndPush));
                         }
-                    )?,
-                    // Eager argument evaluation: evaluate all arguments before
-                    // calling the function.
-                    LispValue::Function(f) => {
-                        instructions
-                            .push(Instr::EvalFunctionEager(f, expr_list.len(), is_tail_call));
-                        instructions.extend(expr_list.into_iter().rev().map(Instr::EvalAndPush));
                     }
-                    _ => return Err(EvaluationError::NonFunctionApplication),
+                } else {
+                    return Err(EvaluationError::NonFunctionApplication);
                 }
             }
             Instr::EvalFunctionEager(func, arg_count, is_tail_call) => {
-                match func {
+                match *func {
                     LispFunc::BuiltIn("list") => {
                         let len = return_values.len();
                         let new_vec = return_values.split_off(len - arg_count);
@@ -350,7 +353,7 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                     LispFunc::BuiltIn(n) => return Err(EvaluationError::UnknownVariable(n.into())),
                     LispFunc::Custom {
                         arg_count: da_arg_count,
-                        body,
+                        ref body,
                     } => {
                         // Too many arguments or none at all.
                         if da_arg_count < arg_count || arg_count == 0 {
@@ -361,7 +364,7 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                         else if arg_count < da_arg_count {
                             let orig_func = LispFunc::Custom {
                                 arg_count: da_arg_count,
-                                body: body,
+                                body: body.clone(),
                             };
                             let continuation = LispFunc::create_continuation(
                                 orig_func,
@@ -370,18 +373,20 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                                 &return_values[current_stack..],
                             );
                             return_values.truncate(current_stack);
-                            return_values.push(LispValue::Function(continuation));
+                            return_values.push(LispValue::Function(Rc::new(continuation)));
                         }
                         // Exactly right number of arguments. Let's evaluate.
+                        // TODO: also reference count function bodies? :o
+                        // or rather, instead? of functions
                         else if is_tail_call {
                             // Remove old arguments of the stack.
                             let top_index = return_values.len() - arg_count;
                             return_values.splice(current_stack..top_index, iter::empty());
 
-                            instructions.push(Instr::EvalAndPush(*body));
+                            instructions.push(Instr::EvalAndPush(body.clone()));
                         } else {
                             instructions.push(Instr::PopState);
-                            instructions.push(Instr::EvalAndPush(*body));
+                            instructions.push(Instr::EvalAndPush(body.clone()));
                             instructions
                                 .push(Instr::SetStackPointer(return_values.len() - arg_count));
                         }
