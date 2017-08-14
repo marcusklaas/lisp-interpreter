@@ -125,11 +125,33 @@ impl ArgTypes {
     }
 }
 
-enum SpecializedExpr {}
+enum BuiltIn {
+    AddOne,
+    SubOne,
+    CondInteger,
+    CheckZero,
+}
 
-struct Specialization {
-    body: SpecializedExpr,
+enum SpecializedExpr<'f> {
+    Function(&'f Specialization<'f>),
+    BuiltIn(BuiltIn),
+    Integer(u64),
+    Boolean(bool),
+}
+
+impl<'f> SpecializedExpr<'f> {
+    
+}
+
+struct Specialization<'e> {
+    body: SpecializedExpr<'e>,
     returnType: ValueType,
+}
+
+impl<'e> Specialization<'e> {
+    // fn new<BI>(arg_iter: I, body: &LispExpr, specializations: &mut HashMap<(LispExpr, ArgTypes), Specialization>) -> Specialization<'e> {
+
+    // }
 }
 
 pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, EvaluationError> {
@@ -138,7 +160,7 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
     let mut instructions = vec![Instr::EvalAndPush(expr.clone())];
     let mut stack_pointers = vec![];
     let mut current_stack = 0;
-    // FIXME: maybe this should map to Option<LispFunc>, where a None would
+    // FIXME: maybe this should map to Option<Specialization>, where a None would
     //        signal that the body cannot be specialized to these types. this
     //        would prevent unspecializable combinations from being tried over
     //        and over needlessly.
@@ -146,7 +168,7 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
 
     // FIXME2: consider having functions manage their own specializations.
     //         probably through an Rc<RefCell<HashMap<ArgTypes, Specialized>>> 
-    let mut specializations: HashMap<(LispExpr, ArgTypes), LispFunc> = HashMap::new();
+    let mut specializations: HashMap<(LispExpr, ArgTypes), Specialization> = HashMap::new();
 
     while let Some(instr) = instructions.pop() {
         match instr {
