@@ -50,10 +50,10 @@ impl State {
 
 #[derive(Debug)]
 enum Instr {
-    EvalAndPush(LispExpr),
+    // EvalAndPush(LispExpr),
     // Function and argument vector, Tail call
     EvalFunction(Vec<LispExpr>, bool),
-    PopCondPush(LispExpr, LispExpr),
+    // PopCondPush(LispExpr, LispExpr),
     PopAndSet(String),
     PopState,
     // Function, Argument Count, Tail call
@@ -181,14 +181,17 @@ fn compile_expr(expr: LispExpr, stack: &[LispValue], state: &State) -> Result<Ve
         LispExpr::OpVar(n) => {
             vek.push(Instr::PushVariable(n));
         }
+        LispExpr::Macro(..) => {
+            // FIXME: this is reachable - just return an error
+            unreachable!()
+        }
         LispExpr::Call(mut expr_list, is_tail_call) => {
             // step 1: remove head expression
             let head_expr = expr_list.remove(0);
 
             // step 2: queue function evaluation with tail
-            // FIXME: this is kinda ugly
             match head_expr {
-                LispExpr::OpVar(ref n) if n == "cond" => {
+                LispExpr::Macro(LispMacro::Cond) => {
                     destructure!(expr_list, [boolean, true_expr, false_expr], {
                         let true_expr_vec = compile_expr(true_expr, stack, state)?;
                         let false_expr_vec = compile_expr(false_expr, stack, state)?;
@@ -202,7 +205,7 @@ fn compile_expr(expr: LispExpr, stack: &[LispValue], state: &State) -> Result<Ve
                         vek.extend(compile_expr(boolean, stack, state)?);
                     })?
                 }
-                LispExpr::OpVar(ref n) if n == "lambda" => {
+                LispExpr::Macro(LispMacro::Lambda) => {
                     destructure!(
                         expr_list,
                         [arg_list, body],
@@ -230,7 +233,7 @@ fn compile_expr(expr: LispExpr, stack: &[LispValue], state: &State) -> Result<Ve
                         }
                     )?
                 }
-                LispExpr::OpVar(ref n) if n == "define" => destructure!(
+                LispExpr::Macro(LispMacro::Define) => destructure!(
                     expr_list,
                     [var_name, definition],
                     if let LispExpr::OpVar(name) = var_name {
@@ -240,14 +243,9 @@ fn compile_expr(expr: LispExpr, stack: &[LispValue], state: &State) -> Result<Ve
                         return Err(EvaluationError::ArgumentTypeMismatch);
                     }
                 )?,
-                // // Eager argument evaluation: evaluate all arguments before
-                // // calling the function.
-                // LispValue::Function(f) => {
-                //     vek.push(Instr::EvalFunctionEager(f, expr_list.len(), is_tail_call));
-                //     vek.extend(expr_list.into_iter().rev().map(Instr::EvalAndPush));
-                // }
                 _ => {
                     vek.push(Instr::EvalFunction(expr_list, is_tail_call));
+                    
                     // step 3: queue evaluation of head
                     vek.extend(compile_expr(head_expr, stack, state)?);
                 } 
@@ -262,7 +260,7 @@ fn compile_expr(expr: LispExpr, stack: &[LispValue], state: &State) -> Result<Ve
 pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, EvaluationError> {
     let mut return_values: Vec<LispValue> = Vec::new();
     let mut int_stack: Vec<u64> = Vec::new();
-    let mut instructions = vec![Instr::EvalAndPush(expr.clone())];
+    let mut instructions = compile_expr(expr.clone(), &return_values[..], state)?;
     let mut stack_pointers = vec![];
     let mut current_stack = 0;
     // FIXME: maybe this should map to Option<Specialization>, where a None would
@@ -336,73 +334,18 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
 
                 current_stack = stack_pointers.pop().unwrap();
             }
-            Instr::EvalAndPush(expr) => {
-                instructions.extend(compile_expr(expr, &return_values[current_stack..], state)?);
-            }
             // Pops a function off the value stack and applies it
             Instr::EvalFunction(expr_list, is_tail_call) => {
-                match return_values.pop().unwrap() {
-                    LispValue::Function(LispFunc::BuiltIn("cond")) => {
-                        destructure!(expr_list, [boolean, true_expr, false_expr], {
-                            let true_expr_vec = compile_expr(true_expr, &return_values[current_stack..], state)?;
-                            let false_expr_vec = compile_expr(false_expr, &return_values[current_stack..], state)?;
-                            let true_expr_len = true_expr_vec.len();
-                            let false_expr_len = false_expr_vec.len();
-
-                            instructions.extend(true_expr_vec);
-                            instructions.push(Instr::PopInstructions(true_expr_len));
-                            instructions.extend(false_expr_vec);
-                            instructions.push(Instr::CondPopInstructions(false_expr_len + 1));
-                            instructions.extend(compile_expr(boolean, &return_values[current_stack..], state)?);
-                            // instructions.push(Instr::EvalAndPush(boolean));
-                        })?
-                    }
-                    LispValue::Function(LispFunc::BuiltIn("lambda")) => {
-                        destructure!(
-                            expr_list,
-                            [arg_list, body],
-                            if let LispExpr::Call(arg_vec, _is_tail_call) = arg_list {
-                                let args = arg_vec
-                                    .into_iter()
-                                    .map(|expr| match expr {
-                                        LispExpr::OpVar(name) => Ok(name),
-                                        _ => Err(EvaluationError::MalformedDefinition),
-                                    })
-                                    .collect::<Result<Vec<_>, _>>()?;
-
-                                // If there are any references to function arguments in
-                                // the lambda body, we should resolve them before
-                                // creating the lambda.
-                                // This enables us to do closures.
-                                let walked_body =
-                                    body.replace_args(&return_values[current_stack..]);
-
-                                let f = LispFunc::new_custom(args, walked_body, state);
-
-                                return_values.push(LispValue::Function(f));
-                            } else {
-                                return Err(EvaluationError::ArgumentTypeMismatch);
-                            }
-                        )?
-                    }
-                    LispValue::Function(LispFunc::BuiltIn("define")) => destructure!(
-                        expr_list,
-                        [var_name, definition],
-                        if let LispExpr::OpVar(name) = var_name {
-                            instructions.push(Instr::PopAndSet(name));
-                            instructions.push(Instr::EvalAndPush(definition));
-                        } else {
-                            return Err(EvaluationError::ArgumentTypeMismatch);
-                        }
-                    )?,
+                if let LispValue::Function(f) = return_values.pop().unwrap() {
                     // Eager argument evaluation: evaluate all arguments before
                     // calling the function.
-                    LispValue::Function(f) => {
-                        instructions
-                            .push(Instr::EvalFunctionEager(f, expr_list.len(), is_tail_call));
-                        instructions.extend(expr_list.into_iter().rev().map(Instr::EvalAndPush));
+                    instructions.push(Instr::EvalFunctionEager(f, expr_list.len(), is_tail_call));
+
+                    for expr in expr_list.into_iter().rev() {
+                        instructions.extend(compile_expr(expr, &return_values[current_stack..], state)?);
                     }
-                    _ => return Err(EvaluationError::NonFunctionApplication),
+                } else {
+                    return Err(EvaluationError::NonFunctionApplication);
                 }
             }
             Instr::EvalFunctionEager(func, arg_count, is_tail_call) => {
@@ -502,25 +445,12 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                             return_values.splice(current_stack..top_index, iter::empty());
 
                             instructions.extend(compile_expr(*body, &return_values[current_stack..], state)?);
-                            // instructions.push(Instr::EvalAndPush(*body));
                         } else {
                             instructions.push(Instr::PopState);
                             instructions.extend(compile_expr(*body, &return_values[current_stack..], state)?);
-                            // instructions.push(Instr::EvalAndPush(*body));
-                            instructions
-                                .push(Instr::SetStackPointer(return_values.len() - arg_count));
+                            instructions.push(Instr::SetStackPointer(return_values.len() - arg_count));
                         }
                     }
-                }
-            }
-            // Pops boolean value off stack, if true, queue evaluation of
-            // first expression, else queue evaluation of the second.
-            Instr::PopCondPush(true_expr, false_expr) => {
-                if let LispValue::Boolean(b) = return_values.pop().unwrap() {
-                    let next_instr = if b { true_expr } else { false_expr };
-                    instructions.push(Instr::EvalAndPush(next_instr));
-                } else {
-                    return Err(EvaluationError::ArgumentTypeMismatch);
                 }
             }
             Instr::PopAndSet(var_name) => {

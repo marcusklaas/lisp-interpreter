@@ -11,6 +11,7 @@ pub mod evaluator;
 use std::fmt;
 use evaluator::State;
 
+// TODO: body should just be a Vec of instructions
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LispFunc {
     BuiltIn(&'static str),
@@ -58,10 +59,29 @@ impl fmt::Display for LispFunc {
     }
 }
 
-// TODO: expressions with opvars / arguments should probably have their
+#[derive(Hash, Debug, PartialEq, Eq, Clone)]
+pub enum LispMacro {
+    Define,
+    Cond,
+    Lambda,
+}
+
+impl LispMacro {
+    fn from_str(s: &str) -> Option<LispMacro> {
+        match s {
+            "define" => Some(LispMacro::Define),
+            "cond" => Some(LispMacro::Cond),
+            "lambda" => Some(LispMacro::Lambda),
+            _ => None,
+        }
+    }
+}
+
+// TODO: expressions with opvars / macros / arguments should probably have their
 //       own type at some point.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum LispExpr {
+    Macro(LispMacro),
     Value(LispValue),
     OpVar(String),
     // Offset from stack pointer on the return_values stack.
@@ -78,6 +98,7 @@ impl LispExpr {
     pub fn transform(self, args: &[String], state: &State, can_tail_call: bool) -> LispExpr {
         match self {
             x @ LispExpr::Value(_) => x,
+            x @ LispExpr::Macro(_) => x,
             // This should not be possible. We shouldn't transform
             // an expression twice without resolving the arguments first.
             LispExpr::Argument(_) => unreachable!(),
@@ -135,6 +156,7 @@ impl fmt::Display for LispExpr {
             LispExpr::Argument(ref offset) => write!(f, "${}", offset),
             LispExpr::Value(ref v) => write!(f, "{}", v),
             LispExpr::OpVar(ref name) => write!(f, "{}", name),
+            LispExpr::Macro(ref mac) => write!(f, "{:?}", mac),
             LispExpr::Call(ref expr_vec, is_tail_call) => {
                 if is_tail_call {
                     write!(f, "t")?;
@@ -492,6 +514,18 @@ mod tests {
                 "(map (lambda (f) (f 10)) (map (lambda (n) (lambda (x) (add x n))) (list 1 2 3 4 5 6 7 8 9 10)))",
             ],
             "(11 12 13 14 15 16 17 18 19 20)",
+        );
+    }
+
+    #[test]
+    fn list_closure() {
+        check_lisp_ok(
+            vec![
+                "(define add (lambda (x y) (cond (zero? y) x (add (add1 x) (sub1 y)))))",
+                "(define map (lambda (f xs) (cond (null? xs) (list) (cons (f (car xs)) (map f (cdr xs))))))",
+                "(list (lambda (f) (f 10)) (map (lambda (n) (lambda (x) (add x n)))))",
+            ],
+            "this just shouldnt crash",
         );
     }
 
