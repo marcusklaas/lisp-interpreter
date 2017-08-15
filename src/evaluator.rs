@@ -58,7 +58,6 @@ enum Instr {
     PopState,
     // Function, Argument Count, Tail call
     EvalFunctionEager(LispFunc, usize, bool),
-    SetStackPointer(usize),
 
     // Removes top n instructions from stack
     PopInstructions(usize),
@@ -158,7 +157,7 @@ impl SpecializedExpr {}
 
 struct Specialization {
     body: SpecializedExpr,
-    returnType: ValueType,
+    return_type: ValueType,
 }
 
 impl Specialization {
@@ -321,11 +320,6 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                 }
             }
 
-
-            Instr::SetStackPointer(p) => {
-                stack_pointers.push(current_stack);
-                current_stack = p;
-            }
             Instr::PopState => {
                 let val = return_values.pop().unwrap();
 
@@ -439,16 +433,19 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                             return_values.push(LispValue::Function(continuation));
                         }
                         // Exactly right number of arguments. Let's evaluate.
-                        else if is_tail_call && false {
+                        else if is_tail_call {
                             // Remove old arguments of the stack.
                             let top_index = return_values.len() - arg_count;
                             return_values.splice(current_stack..top_index, iter::empty());
 
                             instructions.extend(compile_expr(*body, &return_values[current_stack..], state)?);
-                        } else {
+                        }
+                        else {
+                            stack_pointers.push(current_stack);
+                            current_stack = return_values.len() - arg_count;
+
                             instructions.push(Instr::PopState);
                             instructions.extend(compile_expr(*body, &return_values[current_stack..], state)?);
-                            instructions.push(Instr::SetStackPointer(return_values.len() - arg_count));
                         }
                     }
                 }

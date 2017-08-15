@@ -1,6 +1,7 @@
 #![cfg_attr(feature = "clippy", feature(plugin))]
 #![cfg_attr(feature = "clippy", plugin(clippy))]
 #![feature(test, splice)]
+#![allow(unused_variables, dead_code, unused_mut)]
 
 extern crate test;
 extern crate smallvec;
