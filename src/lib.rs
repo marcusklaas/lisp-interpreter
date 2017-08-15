@@ -556,9 +556,7 @@ mod tests {
     fn list_closure() {
         check_lisp_ok(
             vec![
-                "(define add (lambda (x y) (cond (zero? y) x (add (add1 x) (sub1 y)))))",
-                "(define map (lambda (f xs) (cond (null? xs) (list) (cons (f (car xs)) (map f (cdr xs))))))",
-                "(list (lambda (f) (f 10)) (map (lambda (n) (lambda (x) (add x n)))))",
+                "(list add1 ((lambda (f x) (f x)) sub1))",
             ],
             "this just shouldnt crash",
         );
