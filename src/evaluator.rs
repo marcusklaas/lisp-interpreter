@@ -67,7 +67,6 @@ enum Instr {
     CloneValue(usize),
     PushVariable(String),
 
-
     // Integer specialization instructions
 
     // Increment integer at the top of the int stack
@@ -167,7 +166,11 @@ impl Specialization {
 }
 
 // TODO: prove that this cannot go into unbounded recursion
-fn compile_expr(expr: LispExpr, stack: &[LispValue], state: &State) -> Result<Vec<Instr>, EvaluationError> {
+fn compile_expr(
+    expr: LispExpr,
+    stack: &[LispValue],
+    state: &State,
+) -> Result<Vec<Instr>, EvaluationError> {
     let mut vek = vec![];
 
     match expr {
@@ -221,8 +224,7 @@ fn compile_expr(expr: LispExpr, stack: &[LispValue], state: &State) -> Result<Ve
                             // the lambda body, we should resolve them before
                             // creating the lambda.
                             // This enables us to do closures.
-                            let walked_body =
-                                body.replace_args(stack);
+                            let walked_body = body.replace_args(stack);
 
                             let f = LispFunc::new_custom(args, walked_body, state);
 
@@ -244,7 +246,7 @@ fn compile_expr(expr: LispExpr, stack: &[LispValue], state: &State) -> Result<Ve
                 )?,
                 _ => {
                     vek.push(Instr::EvalFunction(expr_list, is_tail_call));
-                    
+
                     // step 3: queue evaluation of head
                     vek.extend(compile_expr(head_expr, stack, state)?);
                 } 
@@ -272,10 +274,6 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
     let mut specializations: HashMap<(LispExpr, ArgTypes), Rc<Specialization>> = HashMap::new();
 
     while let Some(instr) = instructions.pop() {
-        println!("executing instr: {:?}", &instr);
-        println!("return values: {:?}\n\n\n", &return_values);
-        println!("current stack: {}", current_stack);
-
         match instr {
             Instr::IntIncrement => {
                 // This is a specialized instruction. Specialized instructions
@@ -293,7 +291,6 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
             Instr::IntPush(i) => {
                 int_stack.push(i);
             }
-
 
             Instr::PopInstructions(n) => {
                 let new_len = instructions.len() - n;
@@ -316,13 +313,11 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                 let value = return_values[index].clone();
                 return_values.push(value);
             }
-            Instr::PushVariable(n) => {
-                if let Some(v) = state.get_variable_value(&n) {
-                    return_values.push(v);
-                } else {
-                    return Err(EvaluationError::UnknownVariable(n));
-                }
-            }
+            Instr::PushVariable(n) => if let Some(v) = state.get_variable_value(&n) {
+                return_values.push(v);
+            } else {
+                return Err(EvaluationError::UnknownVariable(n));
+            },
 
             Instr::PopState => {
                 let val = return_values.pop().unwrap();
@@ -340,14 +335,9 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                     instructions.push(Instr::EvalFunctionEager(f, expr_list.len(), is_tail_call));
 
                     for expr in expr_list.into_iter().rev() {
-                        // println!("Evaluating expr: {}", &expr);
                         let instr_vec = compile_expr(expr, &return_values[current_stack..], state)?;
-                        // println!("instructions: {:?}", instr_vec);
                         instructions.extend(instr_vec);
                     }
-
-                    // println!("total instruction vec: {:?}", &instructions);
-                    // println!("return values: {:?}", &return_values);
                 } else {
                     return Err(EvaluationError::NonFunctionApplication);
                 }
@@ -355,12 +345,7 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
             Instr::EvalFunctionEager(func, arg_count, is_tail_call) => {
                 match func {
                     LispFunc::BuiltIn("list") => {
-                        println!("listing {} values!", arg_count);
                         let len = return_values.len();
-                        println!("there are {} values on the stack right now", len);
-                        for v in return_values.iter() {
-                            println!("{}\n\n", v);
-                        }
                         let new_vec = return_values.split_off(len - arg_count);
                         return_values.push(LispValue::SubValue(new_vec));
                     }
@@ -434,6 +419,11 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                         // Not enough arguments, let's create a lambda that takes
                         // the remainder.
                         else if arg_count < da_arg_count {
+                            stack_pointers.push(current_stack);
+                            current_stack = return_values.len() - arg_count;
+
+                            instructions.push(Instr::PopState);
+
                             let orig_func = LispFunc::Custom {
                                 arg_count: da_arg_count,
                                 body: body,
@@ -444,7 +434,7 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                                 arg_count,
                                 &return_values[current_stack..],
                             );
-                            println!("currying!");
+
                             return_values.truncate(current_stack);
                             return_values.push(LispValue::Function(continuation));
                         }
@@ -454,13 +444,17 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                             let top_index = return_values.len() - arg_count;
                             return_values.splice(current_stack..top_index, iter::empty());
 
-                            instructions.extend(compile_expr(*body, &return_values[current_stack..], state)?);
+                            instructions.extend(
+                                compile_expr(*body, &return_values[current_stack..], state)?,
+                            );
                         } else {
                             stack_pointers.push(current_stack);
                             current_stack = return_values.len() - arg_count;
 
                             instructions.push(Instr::PopState);
-                            instructions.extend(compile_expr(*body, &return_values[current_stack..], state)?);
+                            instructions.extend(
+                                compile_expr(*body, &return_values[current_stack..], state)?,
+                            );
                         }
                     }
                 }

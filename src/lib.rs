@@ -538,8 +538,6 @@ mod tests {
         );
     }
 
-    // (map (lambda (x) (lambda (y) x)) (list 1))
-
     #[test]
     fn closures() {
         check_lisp_ok(
@@ -554,12 +552,7 @@ mod tests {
 
     #[test]
     fn list_closure() {
-        check_lisp_ok(
-            vec![
-                "(list add1 ((lambda (f x) (f x)) sub1))",
-            ],
-            "this just shouldnt crash",
-        );
+        assert!(check_lisp(vec!["(list add1 ((lambda (f x) (f x)) sub1))"]).is_ok());
     }
 
     #[test]
