@@ -439,7 +439,7 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                             return_values.push(LispValue::Function(continuation));
                         }
                         // Exactly right number of arguments. Let's evaluate.
-                        else if is_tail_call {
+                        else if is_tail_call && false {
                             // Remove old arguments of the stack.
                             let top_index = return_values.len() - arg_count;
                             return_values.splice(current_stack..top_index, iter::empty());

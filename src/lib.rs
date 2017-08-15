@@ -45,17 +45,37 @@ impl LispFunc {
             body: Box::new(LispExpr::Call(call_vec, true)),
         }
     }
+
+    pub fn pretty_print(&self, indent: usize) -> String {
+        match *self {
+            LispFunc::BuiltIn(name) => name.to_owned(),
+            LispFunc::Custom {
+                arg_count,
+                ref body,
+            } => {
+                let mut result = String::new();
+
+                for i in 0..arg_count {
+                    if i > 0 {
+                        result.push(' ');
+                    }
+                    result.push_str(&format!("${}", i));
+                }
+
+                result.push_str(&format!(" ->\n{}", indent_to_string(indent + 1)));
+                result + &body.pretty_print(indent + 1)
+            }
+        }
+    }
+}
+
+fn indent_to_string(indent: usize) -> String {
+    ::std::iter::repeat(' ').take(indent * 4).collect()
 }
 
 impl fmt::Display for LispFunc {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
-            LispFunc::BuiltIn(name) => write!(f, "{}", name),
-            LispFunc::Custom {
-                arg_count,
-                ref body,
-            } => write!(f, "{} -> {}", arg_count, body),
-        }
+        write!(f, "{}", self.pretty_print(0))
     }
 }
 
@@ -92,6 +112,36 @@ pub enum LispExpr {
 }
 
 impl LispExpr {
+    pub fn pretty_print(&self, indent: usize) -> String {
+        match *self {
+            LispExpr::Argument(ref offset) => format!("${}", offset),
+            LispExpr::Value(ref v) => v.pretty_print(indent),
+            LispExpr::OpVar(ref name) => name.clone(),
+            LispExpr::Macro(ref mac) => format!("{:?}", mac),
+            LispExpr::Call(ref expr_vec, is_tail_call) => {
+                let mut result = String::new();
+
+                if is_tail_call {
+                    result.push('t');
+                }
+
+                result.push('{');
+
+                for (idx, expr) in expr_vec.iter().enumerate() {
+                    if idx > 0 {
+                        result.push('\n');
+                        result.push_str(&indent_to_string(indent));
+                    }
+
+                    result.push_str(&expr.pretty_print(indent));
+                }
+
+                result.push('}');
+                result
+            }
+        }
+    }
+
     // Prepares a LispExpr for use in a lambda body, by mapping
     // variables to references argument indices and checking what
     // calls are tail calls.
@@ -152,29 +202,7 @@ impl LispExpr {
 
 impl fmt::Display for LispExpr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
-            LispExpr::Argument(ref offset) => write!(f, "${}", offset),
-            LispExpr::Value(ref v) => write!(f, "{}", v),
-            LispExpr::OpVar(ref name) => write!(f, "{}", name),
-            LispExpr::Macro(ref mac) => write!(f, "{:?}", mac),
-            LispExpr::Call(ref expr_vec, is_tail_call) => {
-                if is_tail_call {
-                    write!(f, "t")?;
-                }
-
-                write!(f, "(")?;
-
-                for (idx, expr) in expr_vec.iter().enumerate() {
-                    if idx > 0 {
-                        write!(f, " ")?;
-                    }
-
-                    write!(f, "{}", expr)?;
-                }
-
-                write!(f, ")")
-            }
-        }
+        write!(f, "{}", self.pretty_print(0))
     }
 }
 
@@ -219,30 +247,34 @@ impl LispValue {
             LispValue::SubValue(..) => ValueType::List,
         }
     }
+
+    pub fn pretty_print(&self, indent: usize) -> String {
+        match *self {
+            LispValue::Function(ref func) => format!("[{}]", func.pretty_print(indent)),
+            LispValue::Integer(i) => i.to_string(),
+            LispValue::Boolean(true) => "#t".into(),
+            LispValue::Boolean(false) => "#f".into(),
+            LispValue::SubValue(ref vec) => {
+                let mut result = "(".to_string();
+
+                for (idx, val) in vec.iter().enumerate() {
+                    if idx > 0 {
+                        result.push(' ');
+                    }
+
+                    result.push_str(&val.pretty_print(indent));
+                }
+
+                result.push(')');
+                result
+            }
+        }
+    }
 }
 
 impl fmt::Display for LispValue {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
-            LispValue::Function(ref func) => write!(f, "func[{}]", func),
-            LispValue::Integer(i) => write!(f, "{}", i),
-            LispValue::Boolean(true) => write!(f, "#t"),
-            LispValue::Boolean(false) => write!(f, "#f"),
-            LispValue::SubValue(ref vec) => {
-                write!(f, "(")?;
-
-                for (idx, val) in vec.iter().enumerate() {
-                    if idx > 0 {
-                        write!(f, " ")?;
-                    }
-
-                    write!(f, "{}", val)?;
-                }
-
-                write!(f, ")")
-            }
-        }
-
+        write!(f, "{}", self.pretty_print(0))
     }
 }
 
@@ -504,6 +536,8 @@ mod tests {
             "(0 2 3 5 7 10)",
         );
     }
+
+    // (map (lambda (x) (lambda (y) x)) (list 1))
 
     #[test]
     fn closures() {
