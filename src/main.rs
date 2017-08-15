@@ -25,10 +25,12 @@ fn main() {
     let mut rl = rustyline::Editor::<()>::new();
     let mut state = State::new();
 
-    for def in PRELUDE {
-        let parse_res = parse_lisp_string(def).expect("Prelude statement failed to parse!");
-        yalp::evaluator::eval(&parse_res, &mut state)
-            .expect("Prelude statement failed to execute!");
+    if ::std::env::args().skip(1).collect::<Vec<String>>() != vec!["--no-prelude"] {
+        for def in PRELUDE {
+            let parse_res = parse_lisp_string(def).expect("Prelude statement failed to parse!");
+            yalp::evaluator::eval(&parse_res, &mut state)
+                .expect("Prelude statement failed to execute!");
+        }
     }
 
     loop {

@@ -10,13 +10,14 @@ pub mod evaluator;
 
 use std::fmt;
 use evaluator::State;
+use std::rc::Rc;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LispFunc {
     BuiltIn(&'static str),
     Custom {
         arg_count: usize,
-        body: Box<LispExpr>,
+        body: LispExpr,
     },
 }
 
@@ -24,7 +25,7 @@ impl LispFunc {
     pub fn new_custom(args: Vec<String>, body: LispExpr, state: &State) -> LispFunc {
         LispFunc::Custom {
             arg_count: args.len(),
-            body: Box::new(body.transform(&args[..], state, true)),
+            body: body.transform(&args[..], state, true),
         }
     }
 
@@ -35,13 +36,13 @@ impl LispFunc {
         stack: &[LispValue],
     ) -> LispFunc {
         let arg_count = total_args - supplied_args;
-        let mut call_vec = vec![LispExpr::Value(LispValue::Function(f))];
+        let mut call_vec = vec![LispExpr::Value(LispValue::Function(Rc::new(f)))];
         call_vec.extend(stack[..supplied_args].iter().cloned().map(LispExpr::Value));
         call_vec.extend((0..total_args - supplied_args).map(LispExpr::Argument));
 
         LispFunc::Custom {
             arg_count: arg_count,
-            body: Box::new(LispExpr::Call(call_vec, true)),
+            body: LispExpr::Call(call_vec, true),
         }
     }
 }
@@ -49,7 +50,7 @@ impl LispFunc {
 impl fmt::Display for LispFunc {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            LispFunc::BuiltIn(ref name) => write!(f, "{}", name),
+            LispFunc::BuiltIn(name) => write!(f, "{}", name),
             LispFunc::Custom {
                 arg_count,
                 ref body,
@@ -178,11 +179,12 @@ enum ValueType {
     Function,
 }
 
+// TODO: add some convenience function for creating functions?
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LispValue {
     Boolean(bool),
     Integer(u64),
-    Function(LispFunc),
+    Function(Rc<LispFunc>),
     // TODO: this should be renamed to List
     SubValue(Vec<LispValue>),
 }
