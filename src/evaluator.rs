@@ -1,10 +1,6 @@
 use super::*;
 use std::collections::HashMap;
 use std::iter;
-use std::cell::RefCell;
-use std::rc::Rc;
-
-use smallvec::SmallVec;
 
 #[derive(Debug, Clone)]
 pub struct State {
@@ -114,58 +110,6 @@ macro_rules! destructure {
     };
 }
 
-// TODO: we could pack many more value types
-// into 32 bits - but this will do for now. Plus, the semantics
-// are nice now
-#[derive(PartialEq, Eq)]
-struct ArgTypes {
-    repr: SmallVec<[ValueType; 4]>,
-}
-
-impl ArgTypes {
-    fn from_type_iterator<I: Iterator<Item = ValueType>>(iter: I) -> ArgTypes {
-        let mut repr = SmallVec::new();
-        repr.extend(iter);
-
-        ArgTypes { repr: repr }
-    }
-}
-
-enum BuiltIn {
-    AddOne,
-    SubOne,
-    Cond,
-    CheckZero,
-    Cons,
-    CheckNull,
-    Car,
-    Cdr,
-    Define,
-    Lambda,
-    List,
-}
-
-enum SpecializedExpr {
-    Function(Rc<Specialization>),
-    BuiltIn(BuiltIn),
-    Integer(u64),
-    Boolean(bool),
-}
-
-impl SpecializedExpr {}
-
-struct Specialization {
-    body: SpecializedExpr,
-    return_type: ValueType,
-}
-
-impl Specialization {
-    // fn new<BI>(arg_iter: I, body: &LispExpr, specializations: &mut HashMap<(LispExpr, ArgTypes), Specialization>) -> Specialization<'e> {
-
-    // }
-}
-
-// TODO: prove that this cannot go into unbounded recursion
 // TODO: check that only top level matters for determining whether we
 //       are dealing with a closure
 pub fn compile_expr(
@@ -227,12 +171,10 @@ pub fn compile_expr(
                             // the lambda body, we should resolve them before
                             // creating the lambda.
                             // This enables us to do closures.
-                            // TODO: replace args should let us know whether it
-                            // replaced args
                             let (replaced_args, walked_body) = body.replace_args(stack);
                             is_closure = is_closure || replaced_args;
 
-                            let f = LispFunc::new_custom(args, walked_body, stack, state);
+                            let f = LispFunc::new_custom(args, walked_body, state);
 
                             vek.push(Instr::PushValue(LispValue::Function(f)));
                         } else {
@@ -270,14 +212,6 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
     let mut instructions = compile_expr(expr.clone(), &return_values[..], state)?.1;
     let mut stack_pointers = vec![];
     let mut current_stack = 0;
-    // FIXME: maybe this should map to Option<Specialization>, where a None would
-    //        signal that the body cannot be specialized to these types. this
-    //        would prevent unspecializable combinations from being tried over
-    //        and over needlessly.
-    //        but this optimization is probably premature at this point.
-
-    // FIXME2: consider having functions manage their own specializations.
-    // let mut specializations: HashMap<(LispExpr, ArgTypes), Rc<Specialization>> = HashMap::new();
 
     while let Some(instr) = instructions.pop() {
         match instr {
@@ -431,7 +365,6 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                                 funk_arg_count,
                                 arg_count,
                                 &return_values[current_stack..],
-                                state,
                             );
 
                             instructions.push(Instr::PopState);

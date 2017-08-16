@@ -1,10 +1,8 @@
 #![cfg_attr(feature = "clippy", feature(plugin))]
 #![cfg_attr(feature = "clippy", plugin(clippy))]
 #![feature(test, splice)]
-#![allow(unused_variables, dead_code, unused_mut)]
 
 extern crate test;
-extern crate smallvec;
 
 pub mod parse;
 pub mod evaluator;
@@ -60,7 +58,7 @@ pub enum LispFunc {
 }
 
 impl LispFunc {
-    pub fn new_custom(args: Vec<String>, body: LispExpr, stack: &[LispValue], state: &State) -> LispFunc {
+    pub fn new_custom(args: Vec<String>, body: LispExpr, state: &State) -> LispFunc {
         LispFunc::Custom(CustomFunc {
             arg_count: args.len(),
             body: Box::new(body.transform(&args[..], state, true)),
@@ -73,7 +71,6 @@ impl LispFunc {
         total_args: usize,
         supplied_args: usize,
         stack: &[LispValue],
-        state: &State,
     ) -> LispFunc {
         let arg_count = total_args - supplied_args;
         let mut call_vec = vec![LispExpr::Value(LispValue::Function(f))];
@@ -257,14 +254,6 @@ pub enum EvaluationError {
     TestOneTwoThree,
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum ValueType {
-    Boolean,
-    Integer,
-    List,
-    Function,
-}
-
 // TODO: add some convenience function for creating functions?
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LispValue {
@@ -276,15 +265,6 @@ pub enum LispValue {
 }
 
 impl LispValue {
-    fn get_type(&self) -> ValueType {
-        match *self {
-            LispValue::Boolean(..) => ValueType::Boolean,
-            LispValue::Integer(..) => ValueType::Integer,
-            LispValue::Function(..) => ValueType::Function,
-            LispValue::SubValue(..) => ValueType::List,
-        }
-    }
-
     pub fn pretty_print(&self, indent: usize) -> String {
         match *self {
             LispValue::Function(ref func) => format!("[{}]", func.pretty_print(indent)),
