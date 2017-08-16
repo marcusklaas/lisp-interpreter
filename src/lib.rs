@@ -15,7 +15,7 @@ use evaluator::{State, Instr, compile_expr};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CustomFunc {
     arg_count: usize,
-    body: Box<LispExpr>,
+    body: Rc<LispExpr>,
     byte_code: Rc<RefCell<Option<Vec<Instr>>>>,
 }
 
@@ -61,7 +61,7 @@ impl LispFunc {
     pub fn new_custom(args: Vec<String>, body: LispExpr, state: &State) -> LispFunc {
         LispFunc::Custom(CustomFunc {
             arg_count: args.len(),
-            body: Box::new(body.transform(&args[..], state, true)),
+            body: Rc::new(body.transform(&args[..], state, true)),
             byte_code: Rc::new(RefCell::new(None)),
         })
     }
@@ -79,7 +79,7 @@ impl LispFunc {
 
         LispFunc::Custom(CustomFunc {
             arg_count: arg_count,
-            body: Box::new(LispExpr::Call(call_vec, true)),
+            body: Rc::new(LispExpr::Call(call_vec, true)),
             byte_code: Rc::new(RefCell::new(None)),
         })
     }
