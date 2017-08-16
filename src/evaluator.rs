@@ -7,7 +7,7 @@ use smallvec::SmallVec;
 
 #[derive(Debug, Clone)]
 pub struct State {
-    pub bound: HashMap<String, LispValue>,
+    bound: HashMap<String, LispValue>,
 }
 
 impl State {
@@ -48,12 +48,11 @@ impl State {
     }
 }
 
-#[derive(Debug)]
-enum Instr {
-    // EvalAndPush(LispExpr),
+// TODO: remove superfluous derives
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum Instr {
     // Function and argument vector, Tail call
     EvalFunction(Vec<LispExpr>, bool),
-    // PopCondPush(LispExpr, LispExpr),
     PopAndSet(String),
     PopState,
     // Function, Argument Count, Tail call
@@ -117,7 +116,7 @@ macro_rules! destructure {
 // TODO: we could pack many more value types
 // into 32 bits - but this will do for now. Plus, the semantics
 // are nice now
-#[derive(Hash, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 struct ArgTypes {
     repr: SmallVec<[ValueType; 4]>,
 }
@@ -166,7 +165,7 @@ impl Specialization {
 }
 
 // TODO: prove that this cannot go into unbounded recursion
-fn compile_expr(
+pub fn compile_expr(
     expr: LispExpr,
     stack: &[LispValue],
     state: &State,
@@ -226,7 +225,7 @@ fn compile_expr(
                             // This enables us to do closures.
                             let walked_body = body.replace_args(stack);
 
-                            let f = LispFunc::new_custom(args, walked_body, state);
+                            let f = LispFunc::new_custom(args, walked_body, stack, state);
 
                             vek.push(Instr::PushValue(LispValue::Function(f)));
                         } else {
@@ -271,7 +270,7 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
     //        but this optimization is probably premature at this point.
 
     // FIXME2: consider having functions manage their own specializations.
-    let mut specializations: HashMap<(LispExpr, ArgTypes), Rc<Specialization>> = HashMap::new();
+    // let mut specializations: HashMap<(LispExpr, ArgTypes), Rc<Specialization>> = HashMap::new();
 
     while let Some(instr) = instructions.pop() {
         match instr {
@@ -408,33 +407,32 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                         return Err(EvaluationError::ArgumentCountMismatch);
                     },
                     LispFunc::BuiltIn(n) => return Err(EvaluationError::UnknownVariable(n.into())),
-                    LispFunc::Custom {
-                        arg_count: da_arg_count,
-                        body,
-                    } => {
+                    //f @ LispFunc::Custom { arg_count: da_arg_count, .. } if arg_count < da_arg_count
+                    LispFunc::Custom(f) => {
                         // Too many arguments or none at all.
-                        if da_arg_count < arg_count || arg_count == 0 {
+                        if f.arg_count < arg_count || arg_count == 0 {
                             return Err(EvaluationError::ArgumentCountMismatch);
                         }
                         // Not enough arguments, let's create a lambda that takes
                         // the remainder.
-                        else if arg_count < da_arg_count {
+                        else if arg_count < f.arg_count {
                             stack_pointers.push(current_stack);
                             current_stack = return_values.len() - arg_count;
 
-                            instructions.push(Instr::PopState);
-
-                            let orig_func = LispFunc::Custom {
-                                arg_count: da_arg_count,
-                                body: body,
-                            };
+                            let orig_func = LispFunc::Custom(CustomFunc {
+                                arg_count: f.arg_count,
+                                body: f.body,
+                                byte_code: f.byte_code,
+                            });
                             let continuation = LispFunc::create_continuation(
                                 orig_func,
-                                da_arg_count,
+                                f.arg_count,
                                 arg_count,
                                 &return_values[current_stack..],
+                                state,
                             );
 
+                            instructions.push(Instr::PopState);
                             return_values.truncate(current_stack);
                             return_values.push(LispValue::Function(continuation));
                         }
@@ -445,7 +443,7 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                             return_values.splice(current_stack..top_index, iter::empty());
 
                             instructions.extend(
-                                compile_expr(*body, &return_values[current_stack..], state)?,
+                                compile_expr(*(f.body), &return_values[current_stack..], state)?,
                             );
                         } else {
                             stack_pointers.push(current_stack);
@@ -453,7 +451,7 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
 
                             instructions.push(Instr::PopState);
                             instructions.extend(
-                                compile_expr(*body, &return_values[current_stack..], state)?,
+                                compile_expr(*(f.body), &return_values[current_stack..], state)?,
                             );
                         }
                     }

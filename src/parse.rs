@@ -64,6 +64,7 @@ impl<'a> Iterator for Tokens<'a> {
         }
 
         while let Some(c) = self.chars.next() {
+            // FIXME: this reads poorly
             return match c {
                 '(' => Some(Token::OpenParen),
                 ')' => Some(Token::CloseParen),

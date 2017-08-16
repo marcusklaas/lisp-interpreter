@@ -10,24 +10,57 @@ pub mod parse;
 pub mod evaluator;
 
 use std::fmt;
-use evaluator::State;
+use std::rc::Rc;
+use std::cell::RefCell;
+use evaluator::{State, Instr, compile_expr};
 
-// TODO: body should just be a Vec of instructions
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CustomFunc {
+    arg_count: usize,
+    body: Box<LispExpr>,
+    byte_code: Rc<RefCell<Option<Vec<Instr>>>>,
+}
+
+impl CustomFunc {
+    // FIXME: do a pass reducing the number of clones and stuff
+    pub fn compile(&mut self, stack: &[LispValue], state: &State) -> Result<Vec<Instr>, EvaluationError> {
+        if let Some(ref vek) = *self.byte_code.borrow() {
+            Ok(vek.clone())
+        } else {
+            let new_bytes = compile_expr((&*self.body).clone(), stack, state)?;
+            *(self.byte_code.borrow_mut()) = Some(new_bytes.clone());
+            Ok(new_bytes)
+        }
+    }
+
+    pub fn pretty_print(&self, indent: usize) -> String {
+        let mut result = String::new();
+
+        for i in 0..self.arg_count {
+            if i > 0 {
+                result.push(' ');
+            }
+            result.push_str(&format!("${}", i));
+        }
+
+        result.push_str(&format!(" ->\n{}", indent_to_string(indent + 1)));
+        result + &self.body.pretty_print(indent + 1)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LispFunc {
     BuiltIn(&'static str),
-    Custom {
-        arg_count: usize,
-        body: Box<LispExpr>,
-    },
+    Custom(CustomFunc),
 }
 
 impl LispFunc {
-    pub fn new_custom(args: Vec<String>, body: LispExpr, state: &State) -> LispFunc {
-        LispFunc::Custom {
+    pub fn new_custom(args: Vec<String>, body: LispExpr, stack: &[LispValue], state: &State) -> LispFunc {
+        LispFunc::Custom(CustomFunc {
             arg_count: args.len(),
             body: Box::new(body.transform(&args[..], state, true)),
-        }
+            byte_code: Rc::new(RefCell::new(None)),
+        })
     }
 
     pub fn create_continuation(
@@ -35,37 +68,24 @@ impl LispFunc {
         total_args: usize,
         supplied_args: usize,
         stack: &[LispValue],
+        state: &State,
     ) -> LispFunc {
         let arg_count = total_args - supplied_args;
         let mut call_vec = vec![LispExpr::Value(LispValue::Function(f))];
         call_vec.extend(stack[..supplied_args].iter().cloned().map(LispExpr::Value));
         call_vec.extend((0..total_args - supplied_args).map(LispExpr::Argument));
 
-        LispFunc::Custom {
+        LispFunc::Custom(CustomFunc {
             arg_count: arg_count,
             body: Box::new(LispExpr::Call(call_vec, true)),
-        }
+            byte_code: Rc::new(RefCell::new(None)),
+        })
     }
 
     pub fn pretty_print(&self, indent: usize) -> String {
         match *self {
             LispFunc::BuiltIn(name) => name.to_owned(),
-            LispFunc::Custom {
-                arg_count,
-                ref body,
-            } => {
-                let mut result = String::new();
-
-                for i in 0..arg_count {
-                    if i > 0 {
-                        result.push(' ');
-                    }
-                    result.push_str(&format!("${}", i));
-                }
-
-                result.push_str(&format!(" ->\n{}", indent_to_string(indent + 1)));
-                result + &body.pretty_print(indent + 1)
-            }
+            LispFunc::Custom(ref c) => c.pretty_print(indent),
         }
     }
 }
@@ -80,7 +100,7 @@ impl fmt::Display for LispFunc {
     }
 }
 
-#[derive(Hash, Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum LispMacro {
     Define,
     Cond,
@@ -100,7 +120,7 @@ impl LispMacro {
 
 // TODO: expressions with opvars / macros / arguments should probably have their
 //       own type at some point.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LispExpr {
     Macro(LispMacro),
     Value(LispValue),
@@ -221,7 +241,7 @@ pub enum EvaluationError {
     TestOneTwoThree,
 }
 
-#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 enum ValueType {
     Boolean,
     Integer,
@@ -230,7 +250,7 @@ enum ValueType {
 }
 
 // TODO: add some convenience function for creating functions?
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LispValue {
     Boolean(bool),
     Integer(u64),
