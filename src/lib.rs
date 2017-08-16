@@ -24,13 +24,18 @@ pub struct CustomFunc {
 impl CustomFunc {
     // FIXME: do a pass reducing the number of clones and stuff
     pub fn compile(&mut self, stack: &[LispValue], state: &State) -> Result<Vec<Instr>, EvaluationError> {
-        if let Some(ref vek) = *self.byte_code.borrow() {
-            Ok(vek.clone())
-        } else {
-            let new_bytes = compile_expr((&*self.body).clone(), stack, state)?;
-            *(self.byte_code.borrow_mut()) = Some(new_bytes.clone());
-            Ok(new_bytes)
+        {
+            if let Some(ref vek) = *self.byte_code.borrow() {
+                return Ok(vek.clone());
+            } 
         }
+
+        let (is_closure, new_bytes) = compile_expr((&*self.body).clone(), stack, state)?;
+        if !is_closure {
+            *(self.byte_code.borrow_mut()) = Some(new_bytes.clone());
+        }
+        
+        Ok(new_bytes)
     }
 
     pub fn pretty_print(&self, indent: usize) -> String {
@@ -209,15 +214,26 @@ impl LispExpr {
     }
 
     // Resolves references to function arguments. Used when creating closures.
-    pub fn replace_args(self, stack: &[LispValue]) -> LispExpr {
-        match self {
-            LispExpr::Argument(index) => LispExpr::Value(stack[index].clone()),
+    pub fn replace_args(self, stack: &[LispValue]) -> (bool, LispExpr) {
+        let mut is_closure = false;
+
+        let next = match self {
+            LispExpr::Argument(index) => {
+                is_closure = true;
+                LispExpr::Value(stack[index].clone())
+            }
             LispExpr::Call(vec, is_tail_call) => LispExpr::Call(
-                vec.into_iter().map(|e| e.replace_args(stack)).collect(),
+                vec.into_iter().map(|e| {
+                    let (replaced, exp) = e.replace_args(stack);
+                    is_closure = is_closure || replaced;
+                    exp
+                }).collect(),
                 is_tail_call,
             ),
             x => x,
-        }
+        };
+
+        (is_closure, next)
     }
 }
 

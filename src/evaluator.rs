@@ -1,6 +1,7 @@
 use super::*;
 use std::collections::HashMap;
 use std::iter;
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use smallvec::SmallVec;
@@ -165,12 +166,15 @@ impl Specialization {
 }
 
 // TODO: prove that this cannot go into unbounded recursion
+// TODO: check that only top level matters for determining whether we
+//       are dealing with a closure
 pub fn compile_expr(
     expr: LispExpr,
     stack: &[LispValue],
     state: &State,
-) -> Result<Vec<Instr>, EvaluationError> {
+) -> Result<(bool, Vec<Instr>), EvaluationError> {
     let mut vek = vec![];
+    let mut is_closure = false;
 
     match expr {
         LispExpr::Argument(offset) => {
@@ -194,8 +198,8 @@ pub fn compile_expr(
             match head_expr {
                 LispExpr::Macro(LispMacro::Cond) => {
                     destructure!(expr_list, [boolean, true_expr, false_expr], {
-                        let true_expr_vec = compile_expr(true_expr, stack, state)?;
-                        let false_expr_vec = compile_expr(false_expr, stack, state)?;
+                        let true_expr_vec = compile_expr(true_expr, stack, state)?.1;
+                        let false_expr_vec = compile_expr(false_expr, stack, state)?.1;
                         let true_expr_len = true_expr_vec.len();
                         let false_expr_len = false_expr_vec.len();
 
@@ -203,7 +207,7 @@ pub fn compile_expr(
                         vek.push(Instr::PopInstructions(true_expr_len));
                         vek.extend(false_expr_vec);
                         vek.push(Instr::CondPopInstructions(false_expr_len + 1));
-                        vek.extend(compile_expr(boolean, stack, state)?);
+                        vek.extend(compile_expr(boolean, stack, state)?.1);
                     })?
                 }
                 LispExpr::Macro(LispMacro::Lambda) => {
@@ -223,7 +227,10 @@ pub fn compile_expr(
                             // the lambda body, we should resolve them before
                             // creating the lambda.
                             // This enables us to do closures.
-                            let walked_body = body.replace_args(stack);
+                            // TODO: replace args should let us know whether it
+                            // replaced args
+                            let (replaced_args, walked_body) = body.replace_args(stack);
+                            is_closure = is_closure || replaced_args;
 
                             let f = LispFunc::new_custom(args, walked_body, stack, state);
 
@@ -238,7 +245,7 @@ pub fn compile_expr(
                     [var_name, definition],
                     if let LispExpr::OpVar(name) = var_name {
                         vek.push(Instr::PopAndSet(name));
-                        vek.extend(compile_expr(definition, stack, state)?);
+                        vek.extend(compile_expr(definition, stack, state)?.1);
                     } else {
                         return Err(EvaluationError::ArgumentTypeMismatch);
                     }
@@ -247,20 +254,20 @@ pub fn compile_expr(
                     vek.push(Instr::EvalFunction(expr_list, is_tail_call));
 
                     // step 3: queue evaluation of head
-                    vek.extend(compile_expr(head_expr, stack, state)?);
+                    vek.extend(compile_expr(head_expr, stack, state)?.1);
                 } 
             }
         }
     }
 
-    Ok(vek)
+    Ok((is_closure, vek))
 }
 
 
 pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, EvaluationError> {
     let mut return_values: Vec<LispValue> = Vec::new();
     let mut int_stack: Vec<u64> = Vec::new();
-    let mut instructions = compile_expr(expr.clone(), &return_values[..], state)?;
+    let mut instructions = compile_expr(expr.clone(), &return_values[..], state)?.1;
     let mut stack_pointers = vec![];
     let mut current_stack = 0;
     // FIXME: maybe this should map to Option<Specialization>, where a None would
@@ -334,7 +341,7 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                     instructions.push(Instr::EvalFunctionEager(f, expr_list.len(), is_tail_call));
 
                     for expr in expr_list.into_iter().rev() {
-                        let instr_vec = compile_expr(expr, &return_values[current_stack..], state)?;
+                        let instr_vec = compile_expr(expr, &return_values[current_stack..], state)?.1;
                         instructions.extend(instr_vec);
                     }
                 } else {
@@ -407,8 +414,7 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                         return Err(EvaluationError::ArgumentCountMismatch);
                     },
                     LispFunc::BuiltIn(n) => return Err(EvaluationError::UnknownVariable(n.into())),
-                    //f @ LispFunc::Custom { arg_count: da_arg_count, .. } if arg_count < da_arg_count
-                    LispFunc::Custom(f) => {
+                    LispFunc::Custom(mut f) => {
                         // Too many arguments or none at all.
                         if f.arg_count < arg_count || arg_count == 0 {
                             return Err(EvaluationError::ArgumentCountMismatch);
@@ -419,14 +425,10 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                             stack_pointers.push(current_stack);
                             current_stack = return_values.len() - arg_count;
 
-                            let orig_func = LispFunc::Custom(CustomFunc {
-                                arg_count: f.arg_count,
-                                body: f.body,
-                                byte_code: f.byte_code,
-                            });
+                            let funk_arg_count = f.arg_count;
                             let continuation = LispFunc::create_continuation(
-                                orig_func,
-                                f.arg_count,
+                                LispFunc::Custom(f),
+                                funk_arg_count,
                                 arg_count,
                                 &return_values[current_stack..],
                                 state,
@@ -441,18 +443,16 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                             // Remove old arguments of the stack.
                             let top_index = return_values.len() - arg_count;
                             return_values.splice(current_stack..top_index, iter::empty());
+                            let byte_code = f.compile(&return_values[current_stack..], state)?;
 
-                            instructions.extend(
-                                compile_expr(*(f.body), &return_values[current_stack..], state)?,
-                            );
+                            instructions.extend(byte_code);
                         } else {
                             stack_pointers.push(current_stack);
                             current_stack = return_values.len() - arg_count;
+                            let byte_code = f.compile(&return_values[current_stack..], state)?;
 
                             instructions.push(Instr::PopState);
-                            instructions.extend(
-                                compile_expr(*(f.body), &return_values[current_stack..], state)?,
-                            );
+                            instructions.extend(byte_code);
                         }
                     }
                 }
