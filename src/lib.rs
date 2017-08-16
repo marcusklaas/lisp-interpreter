@@ -190,11 +190,7 @@ impl LispExpr {
                 let do_tail_call = match (can_tail_call, vec.get(0)) {
                     // Special case for `cond`. Even though it is a function,
                     // its child expressions can still be tail calls.
-                    (true, Some(&LispExpr::OpVar(ref name))) => name == "cond" && vec.len() == 4,
-                    (
-                        true,
-                        Some(&LispExpr::Value(LispValue::Function(LispFunc::BuiltIn("cond")))),
-                    ) => vec.len() == 4,
+                    (true, Some(&LispExpr::Macro(LispMacro::Cond))) => vec.len() == 4,
                     _ => false,
                 };
                 let tail_call_iter = (0..).map(|i| (i == 2 || i == 3) && do_tail_call);
@@ -348,6 +344,8 @@ mod tests {
     {
         assert_eq!(expected_err, check_lisp(commands).unwrap_err());
     }
+
+    // TODO: add test to make sure that add is tail call optimized
 
     #[test]
     fn transform_expr() {

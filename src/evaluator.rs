@@ -205,7 +205,6 @@ pub fn compile_expr(
     Ok((is_closure, vek))
 }
 
-
 pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, EvaluationError> {
     let mut return_values: Vec<LispValue> = Vec::new();
     let mut int_stack: Vec<u64> = Vec::new();
@@ -214,6 +213,8 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
     let mut current_stack = 0;
 
     while let Some(instr) = instructions.pop() {
+        // println!("instruction: {:?}", instr);
+
         match instr {
             Instr::IntIncrement => {
                 // This is a specialized instruction. Specialized instructions
@@ -312,14 +313,8 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                     } else {
                         return Err(EvaluationError::ArgumentCountMismatch);
                     },
-                    LispFunc::BuiltIn("add1") => if arg_count == 1 {
-                        if let LispValue::Integer(i) = return_values.pop().unwrap() {
-                            instructions.push(Instr::IntPop);
-                            instructions.push(Instr::IntIncrement);
-                            instructions.push(Instr::IntPush(i));
-                        } else {
-                            return Err(EvaluationError::ArgumentTypeMismatch);
-                        }
+                    LispFunc::BuiltIn("add1") => if arg_count == 1 {                        
+                        unitary_int(&mut return_values, |i| Ok(LispValue::Integer(i + 1)))?
                     } else {
                         return Err(EvaluationError::ArgumentCountMismatch);
                     },
