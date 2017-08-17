@@ -25,15 +25,13 @@ fn exec_command(s: &str, state: &mut State) {
     let parse_result = parse_lisp_string(s);
 
     match parse_result {
-        Ok(ref expr) => {
-            match yalp::evaluator::eval(expr, state) {
-                Ok(val) => {
-                    println!("{}", &val);
-                    state.set_variable(":last", val);
-                }
-                Err(eval_err) => println!("Evaluation error: {:?}", eval_err),
+        Ok(ref expr) => match yalp::evaluator::eval(expr, state) {
+            Ok(val) => {
+                println!("{}", &val);
+                state.set_variable(":last", val);
             }
-        }
+            Err(eval_err) => println!("Evaluation error: {:?}", eval_err),
+        },
         Err(ref parse_err) => {
             println!("Parse error: {:?}", parse_err);
         }

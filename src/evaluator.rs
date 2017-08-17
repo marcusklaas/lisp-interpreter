@@ -26,7 +26,9 @@ impl State {
     }
 
     pub fn get_variable_value(&self, var_name: &str) -> Option<LispValue> {
-        self.index_map.get(var_name).map(|&index| self.store[index].clone())
+        self.index_map
+            .get(var_name)
+            .map(|&index| self.store[index].clone())
     }
 
     pub fn set_variable(&mut self, var_name: &str, val: LispValue) {
@@ -105,10 +107,7 @@ macro_rules! destructure {
     };
 }
 
-pub fn compile_expr(
-    expr: LispExpr,
-    state: &State,
-) -> Result<Vec<Instr>, EvaluationError> {
+pub fn compile_expr(expr: LispExpr, state: &State) -> Result<Vec<Instr>, EvaluationError> {
     let mut vek = vec![];
 
     match expr {
@@ -147,17 +146,15 @@ pub fn compile_expr(
                         vek.extend(compile_expr(boolean, state)?);
                     })?
                 }
-                LispExpr::Macro(LispMacro::Lambda) => {
-                    destructure!(
-                        expr_list,
-                        [arg_list, body],
-                        if let LispExpr::Call(arg_vec, _is_tail_call) = arg_list {
-                            vek.push(Instr::CreateLambda(arg_vec, body));
-                        } else {
-                            return Err(EvaluationError::ArgumentTypeMismatch);
-                        }
-                    )?
-                }
+                LispExpr::Macro(LispMacro::Lambda) => destructure!(
+                    expr_list,
+                    [arg_list, body],
+                    if let LispExpr::Call(arg_vec, _is_tail_call) = arg_list {
+                        vek.push(Instr::CreateLambda(arg_vec, body));
+                    } else {
+                        return Err(EvaluationError::ArgumentTypeMismatch);
+                    }
+                )?,
                 LispExpr::Macro(LispMacro::Define) => destructure!(
                     expr_list,
                     [var_name, definition],
@@ -281,50 +278,36 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                 let new_vec = return_values.split_off(len - arg_count);
                 return_values.push(LispValue::List(new_vec));
             }
-            Instr::Car => {
-                unitary_list(&mut return_values, |mut vec| match vec.pop() {
-                    Some(car) => Ok(car),
-                    None => Err(EvaluationError::EmptyList),
-                })?
-            }
-            Instr::Cdr => {
-                unitary_list(&mut return_values, |mut vec| match vec.pop() {
-                    Some(_) => Ok(LispValue::List(vec)),
-                    None => Err(EvaluationError::EmptyList),
-                })?
-            }
-            Instr::CheckNull => {
-                unitary_list(&mut return_values, |vec| {
-                    Ok(LispValue::Boolean(vec.is_empty()))
-                })?
-            }
-            Instr::AddOne => {
-                unitary_int(&mut return_values, |i| Ok(LispValue::Integer(i + 1)))?
-            }
-            Instr::SubOne => {
-                unitary_int(&mut return_values, |i| if i > 0 {
-                    Ok(LispValue::Integer(i - 1))
-                } else {
-                    Err(EvaluationError::SubZero)
-                })?
-            }
-            Instr::Cons => {
-                if let LispValue::List(mut new_vec) = return_values.pop().unwrap() {
-                    new_vec.push(return_values.pop().unwrap());
-                    return_values.push(LispValue::List(new_vec));
-                } else {
-                    return Err(EvaluationError::ArgumentTypeMismatch);
-                }
-            }
+            Instr::Car => unitary_list(&mut return_values, |mut vec| match vec.pop() {
+                Some(car) => Ok(car),
+                None => Err(EvaluationError::EmptyList),
+            })?,
+            Instr::Cdr => unitary_list(&mut return_values, |mut vec| match vec.pop() {
+                Some(_) => Ok(LispValue::List(vec)),
+                None => Err(EvaluationError::EmptyList),
+            })?,
+            Instr::CheckNull => unitary_list(&mut return_values, |vec| {
+                Ok(LispValue::Boolean(vec.is_empty()))
+            })?,
+            Instr::AddOne => unitary_int(&mut return_values, |i| Ok(LispValue::Integer(i + 1)))?,
+            Instr::SubOne => unitary_int(&mut return_values, |i| if i > 0 {
+                Ok(LispValue::Integer(i - 1))
+            } else {
+                Err(EvaluationError::SubZero)
+            })?,
+            Instr::Cons => if let LispValue::List(mut new_vec) = return_values.pop().unwrap() {
+                new_vec.push(return_values.pop().unwrap());
+                return_values.push(LispValue::List(new_vec));
+            } else {
+                return Err(EvaluationError::ArgumentTypeMismatch);
+            },
             Instr::CheckZero => {
                 unitary_int(&mut return_values, |i| Ok(LispValue::Boolean(i == 0)))?
             }
 
             Instr::EvalFunctionEager(funk, arg_count, is_tail_call) => {
                 match funk {
-                    LispFunc::BuiltIn(b) => {
-                        instructions.push(builtin_instr(b, arg_count)?)
-                    }
+                    LispFunc::BuiltIn(b) => instructions.push(builtin_instr(b, arg_count)?),
                     LispFunc::Custom(mut f) => {
                         // Too many arguments or none at all.
                         if f.arg_count < arg_count || arg_count == 0 {

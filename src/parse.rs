@@ -1,7 +1,7 @@
 use std::str::Chars;
 use std::iter::Peekable;
 
-use super::{LispExpr, LispMacro, LispValue, BuiltIn, LispFunc};
+use super::{BuiltIn, LispExpr, LispFunc, LispMacro, LispValue};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ParseError {

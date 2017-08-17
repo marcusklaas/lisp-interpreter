@@ -3,8 +3,10 @@
 #![feature(test, splice)]
 
 extern crate test;
-#[macro_use] extern crate custom_derive;
-#[macro_use] extern crate enum_derive;
+#[macro_use]
+extern crate custom_derive;
+#[macro_use]
+extern crate enum_derive;
 
 pub mod parse;
 pub mod evaluator;
@@ -12,7 +14,7 @@ pub mod evaluator;
 use std::fmt;
 use std::rc::Rc;
 use std::cell::RefCell;
-use evaluator::{State, Instr, compile_expr};
+use evaluator::{compile_expr, Instr, State};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CustomFunc {
@@ -27,11 +29,11 @@ impl CustomFunc {
         {
             if let Some(ref vek) = *self.byte_code.borrow() {
                 return Ok(vek.clone());
-            } 
+            }
         }
 
         let new_bytes = compile_expr((&*self.body).clone(), state)?;
-        *(self.byte_code.borrow_mut()) = Some(new_bytes.clone());        
+        *(self.byte_code.borrow_mut()) = Some(new_bytes.clone());
         Ok(new_bytes)
     }
 
@@ -255,9 +257,7 @@ impl LispExpr {
     // Resolves references to function arguments. Used when creating closures.
     pub fn replace_args(self, stack: &[LispValue]) -> LispExpr {
         match self {
-            LispExpr::Argument(index) => {
-                LispExpr::Value(stack[index].clone())
-            }
+            LispExpr::Argument(index) => LispExpr::Value(stack[index].clone()),
             LispExpr::Call(vec, is_tail_call) => LispExpr::Call(
                 vec.into_iter().map(|e| e.replace_args(stack)).collect(),
                 is_tail_call,
