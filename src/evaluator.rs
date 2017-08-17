@@ -45,8 +45,6 @@ pub enum Instr {
     EvalFunction(usize, bool),
     PopAndSet(String),
     PopState,
-    // Function, Argument Count, Tail call
-    EvalFunctionEager(LispFunc, usize, bool),
     // Argument List, LispExpr
     CreateLambda(Vec<LispExpr>, LispExpr),
 
@@ -261,10 +259,44 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                 current_stack = stack_pointers.pop().unwrap();
             }
             // Pops a function off the value stack and applies it
-            // TODO: we do not really need this any more! remove it!
-            Instr::EvalFunction(expr_list_len, is_tail_call) => {
-                if let LispValue::Function(f) = return_values.pop().unwrap() {
-                    instructions.push(Instr::EvalFunctionEager(f, expr_list_len, is_tail_call));
+            Instr::EvalFunction(arg_count, is_tail_call) => {
+                if let LispValue::Function(funk) = return_values.pop().unwrap() {
+                    match funk {
+                        LispFunc::BuiltIn(b) => instructions.push(builtin_instr(b, arg_count)?),
+                        LispFunc::Custom(f) => {
+                            // Too many arguments or none at all.
+                            if f.arg_count < arg_count || arg_count == 0 {
+                                return Err(EvaluationError::ArgumentCountMismatch);
+                            }
+                            // Not enough arguments, let's create a lambda that takes
+                            // the remainder.
+                            else if arg_count < f.arg_count {
+                                let temp_stack = return_values.len() - arg_count;
+                                let f_arg_count = f.arg_count;
+                                let continuation = LispFunc::create_continuation(
+                                    f,
+                                    f_arg_count,
+                                    arg_count,
+                                    &return_values[temp_stack..],
+                                );
+
+                                return_values.truncate(temp_stack);
+                                return_values.push(LispValue::Function(continuation));
+                            }
+                            // Exactly right number of arguments. Let's evaluate.
+                            else if is_tail_call {
+                                // Remove old arguments of the stack.
+                                let top_index = return_values.len() - arg_count;
+                                return_values.splice(current_stack..top_index, iter::empty());
+                                instructions.extend(f.compile(state)?);
+                            } else {
+                                stack_pointers.push(current_stack);
+                                current_stack = return_values.len() - arg_count;
+                                instructions.push(Instr::PopState);
+                                instructions.extend(f.compile(state)?);
+                            }
+                        }
+                    }
                 } else {
                     return Err(EvaluationError::NonFunctionApplication);
                 }
@@ -299,43 +331,6 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
             },
             Instr::CheckZero => {
                 unitary_int(&mut return_values, |i| Ok(LispValue::Boolean(i == 0)))?
-            }
-            Instr::EvalFunctionEager(ref funk, arg_count, is_tail_call) => {
-                match *funk {
-                    LispFunc::BuiltIn(b) => instructions.push(builtin_instr(b, arg_count)?),
-                    LispFunc::Custom(ref f) => {
-                        // Too many arguments or none at all.
-                        if f.arg_count < arg_count || arg_count == 0 {
-                            return Err(EvaluationError::ArgumentCountMismatch);
-                        }
-                        // Not enough arguments, let's create a lambda that takes
-                        // the remainder.
-                        else if arg_count < f.arg_count {
-                            let temp_stack = return_values.len() - arg_count;
-                            let continuation = LispFunc::create_continuation(
-                                f.clone(),
-                                f.arg_count,
-                                arg_count,
-                                &return_values[temp_stack..],
-                            );
-
-                            return_values.truncate(temp_stack);
-                            return_values.push(LispValue::Function(continuation));
-                        }
-                        // Exactly right number of arguments. Let's evaluate.
-                        else if is_tail_call {
-                            // Remove old arguments of the stack.
-                            let top_index = return_values.len() - arg_count;
-                            return_values.splice(current_stack..top_index, iter::empty());
-                            instructions.extend(f.compile(state)?);
-                        } else {
-                            stack_pointers.push(current_stack);
-                            current_stack = return_values.len() - arg_count;
-                            instructions.push(Instr::PopState);
-                            instructions.extend(f.compile(state)?);
-                        }
-                    }
-                }
             }
             Instr::PopAndSet(ref var_name) => {
                 state.set_variable(var_name, return_values.pop().unwrap());
