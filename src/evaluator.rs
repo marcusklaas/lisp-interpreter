@@ -234,7 +234,8 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
             Instr::CondPopInstructions(n) => {
                 if let LispValue::Boolean(b) = return_values.pop().unwrap() {
                     if b {
-                        instructions.push(Instr::PopInstructions(n));
+                        let new_len = instructions.len() - n;
+                        instructions.truncate(new_len);
                     }
                 } else {
                     return Err(EvaluationError::ArgumentTypeMismatch);
@@ -310,19 +311,15 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                         // Not enough arguments, let's create a lambda that takes
                         // the remainder.
                         else if arg_count < f.arg_count {
-                            stack_pointers.push(current_stack);
-                            current_stack = return_values.len() - arg_count;
-
-                            let funk_arg_count = f.arg_count;
+                            let temp_stack = return_values.len() - arg_count;
                             let continuation = LispFunc::create_continuation(
                                 f.clone(),
-                                funk_arg_count,
+                                f.arg_count,
                                 arg_count,
-                                &return_values[current_stack..],
+                                &return_values[temp_stack..],
                             );
 
-                            instructions.push(Instr::PopState);
-                            return_values.truncate(current_stack);
+                            return_values.truncate(temp_stack);
                             return_values.push(LispValue::Function(continuation));
                         }
                         // Exactly right number of arguments. Let's evaluate.
