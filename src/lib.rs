@@ -627,6 +627,18 @@ mod tests {
     }
 
     #[test]
+    fn cyclic_func_calls() {
+        check_lisp_ok(
+            vec![
+                "(define <' (lambda (x y) (cond (zero? y) #f (< x (sub1 y)))))",
+                "(define < (lambda (x y) (cond (zero? x) (cond (zero? y) #f #t) (<' (sub1 x) y))))",
+                "(list (< 1 2) (< 0 1) (< 2 2) (< 1 1) (< 1 0) (< 2 1))",
+            ],
+            "(#t #t #f #f #f #f)",
+        );
+    }
+
+    #[test]
     fn range() {
         check_lisp_ok(
             vec![

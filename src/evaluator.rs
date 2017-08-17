@@ -117,13 +117,11 @@ pub fn compile_expr(expr: LispExpr, state: &State) -> Result<Vec<Instr>, Evaluat
         LispExpr::Value(v) => {
             vek.push(Instr::PushValue(v));
         }
-        LispExpr::OpVar(n) => {
-            if let Some(i) = state.get_index(&n) {
-                vek.push(Instr::PushVariable(i));
-            } else {
-                return Err(EvaluationError::UnknownVariable(n));
-            }
-        }
+        LispExpr::OpVar(n) => if let Some(i) = state.get_index(&n) {
+            vek.push(Instr::PushVariable(i));
+        } else {
+            return Err(EvaluationError::UnknownVariable(n));
+        },
         LispExpr::Macro(..) => {
             return Err(EvaluationError::UnexpectedOperator);
         }
