@@ -3,6 +3,8 @@ name = "yalp"
 version = "0.1.0"
 dependencies = [
  "clippy 0.0.148 (registry+https://github.com/rust-lang/crates.io-index)",
+ "custom_derive 0.1.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "enum_derive 0.1.7 (registry+https://github.com/rust-lang/crates.io-index)",
  "rustyline 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
@@ -54,6 +56,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "custom_derive"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
 name = "dtoa"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -66,6 +73,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 [[package]]
 name = "encode_unicode"
 version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "enum_derive"
+version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
@@ -266,9 +278,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 "checksum cargo_metadata 0.2.3 (registry+https://github.com/rust-lang/crates.io-index)" = "be1057b8462184f634c3a208ee35b0f935cfd94b694b26deadccd98732088d7b"
 "checksum clippy 0.0.148 (registry+https://github.com/rust-lang/crates.io-index)" = "cc2eadbfec63bba04a286575aa4a71c597827bc590895c6e5a72337d07fb3baf"
 "checksum clippy_lints 0.0.148 (registry+https://github.com/rust-lang/crates.io-index)" = "14f22e211e8abcb354e70899920a0ba451084b61b321318af495fc6651c60ad4"
+"checksum custom_derive 0.1.7 (registry+https://github.com/rust-lang/crates.io-index)" = "ef8ae57c4978a2acd8b869ce6b9ca1dfe817bff704c220209fdef2c0b75a01b9"
 "checksum dtoa 0.4.1 (registry+https://github.com/rust-lang/crates.io-index)" = "80c8b71fd71146990a9742fc06dcbbde19161a267e0ad4e572c35162f4578c90"
 "checksum either 1.1.0 (registry+https://github.com/rust-lang/crates.io-index)" = "18785c1ba806c258137c937e44ada9ee7e69a37e3c72077542cd2f069d78562a"
 "checksum encode_unicode 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)" = "28d65f1f5841ef7c6792861294b72beda34c664deb8be27970f36c306b7da1ce"
+"checksum enum_derive 0.1.7 (registry+https://github.com/rust-lang/crates.io-index)" = "406ac2a8c9eedf8af9ee1489bee9e50029278a6456c740f7454cf8a158abc816"
 "checksum getopts 0.2.14 (registry+https://github.com/rust-lang/crates.io-index)" = "d9047cfbd08a437050b363d35ef160452c5fe8ea5187ae0a624708c91581d685"
 "checksum itertools 0.6.1 (registry+https://github.com/rust-lang/crates.io-index)" = "e58359414720377f59889192f1ec0e726049ce5735bc21fdb0c4c8ae638305bb"
 "checksum itoa 0.3.1 (registry+https://github.com/rust-lang/crates.io-index)" = "eb2f404fbc66fd9aac13e998248505e7ecb2ad8e44ab6388684c5fb11c6c251c"

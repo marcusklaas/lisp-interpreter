@@ -1,7 +1,7 @@
 use std::str::Chars;
 use std::iter::Peekable;
 
-use super::{LispExpr, LispMacro, LispValue};
+use super::{LispExpr, LispMacro, LispValue, BuiltIn, LispFunc};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ParseError {
@@ -104,6 +104,12 @@ fn parse_lisp(tokens: &mut Tokens) -> Result<Vec<LispExpr>, ParseError> {
             Token::Integer(l) => LispExpr::Value(LispValue::Integer(l)),
             Token::OpVar(o) => if let Some(mac) = LispMacro::from_str(&o) {
                 LispExpr::Macro(mac)
+            } else if let Some(built_in) = BuiltIn::from_str(&o) {
+                LispExpr::Value(LispValue::Function(LispFunc::BuiltIn(built_in)))
+            } else if o == "#t" {
+                LispExpr::Value(LispValue::Boolean(true))
+            } else if o == "#f" {
+                LispExpr::Value(LispValue::Boolean(false))
             } else {
                 LispExpr::OpVar(o)
             },
@@ -148,7 +154,7 @@ mod tests {
                 LispExpr::OpVar("first".to_owned()),
                 LispExpr::Call(
                     vec![
-                        LispExpr::OpVar("list".to_owned()),
+                        LispExpr::Value(LispValue::Function(LispFunc::BuiltIn(BuiltIn::List))),
                         LispExpr::Value(LispValue::Integer(1)),
                         LispExpr::Call(
                             vec![

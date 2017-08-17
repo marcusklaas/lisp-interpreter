@@ -3,6 +3,8 @@
 #![feature(test, splice)]
 
 extern crate test;
+#[macro_use] extern crate custom_derive;
+#[macro_use] extern crate enum_derive;
 
 pub mod parse;
 pub mod evaluator;
@@ -51,9 +53,56 @@ impl CustomFunc {
     }
 }
 
+custom_derive! {
+    #[derive(PartialEq, Eq, Debug, Clone, Copy, IterVariants(BuiltInVariants))]
+    pub enum BuiltIn {
+        AddOne,
+        SubOne,
+        Cons,
+        Cdr,
+        Car,
+        List,
+        CheckZero,
+        CheckNull,
+    }
+}
+
+impl BuiltIn {
+    fn from_str(s: &str) -> Option<BuiltIn> {
+        match s {
+            "add1" => Some(BuiltIn::AddOne),
+            "sub1" => Some(BuiltIn::SubOne),
+            "cons" => Some(BuiltIn::Cons),
+            "cdr" => Some(BuiltIn::Cdr),
+            "car" => Some(BuiltIn::Car),
+            "list" => Some(BuiltIn::List),
+            "zero?" => Some(BuiltIn::CheckZero),
+            "null?" => Some(BuiltIn::CheckNull),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for BuiltIn {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let str = match *self {
+            BuiltIn::AddOne => "add1",
+            BuiltIn::SubOne => "sub1",
+            BuiltIn::Cons => "cons",
+            BuiltIn::Cdr => "cdr",
+            BuiltIn::Car => "car",
+            BuiltIn::List => "list",
+            BuiltIn::CheckZero => "zero?",
+            BuiltIn::CheckNull => "null?",
+        };
+
+        write!(f, "{}", str)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LispFunc {
-    BuiltIn(&'static str),
+    BuiltIn(BuiltIn),
     Custom(CustomFunc),
 }
 
@@ -86,7 +135,7 @@ impl LispFunc {
 
     pub fn pretty_print(&self, indent: usize) -> String {
         match *self {
-            LispFunc::BuiltIn(name) => name.to_owned(),
+            LispFunc::BuiltIn(name) => format!("{:?}", name),
             LispFunc::Custom(ref c) => c.pretty_print(indent),
         }
     }
@@ -352,7 +401,7 @@ mod tests {
         let expr = LispExpr::Call(
             vec![
                 LispExpr::OpVar("x".into()),
-                LispExpr::OpVar("#t".into()),
+                LispExpr::Value(LispValue::Boolean(true)),
                 LispExpr::Call(
                     vec![
                         LispExpr::Value(LispValue::Integer(5)),
