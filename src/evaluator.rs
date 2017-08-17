@@ -57,6 +57,16 @@ pub enum Instr {
     CloneValue(usize),
     // Index in state
     PushVariable(usize),
+
+    // Built-in instructions
+    AddOne,
+    SubOne,
+    Cons,
+    Cdr,
+    Car,
+    List(usize),
+    CheckZero,
+    CheckNull,
 }
 
 fn unitary_int<F: Fn(u64) -> Result<LispValue, EvaluationError>>(
@@ -96,14 +106,10 @@ macro_rules! destructure {
     };
 }
 
-// TODO: check that only top level matters for determining whether we
-//       are dealing with a closure
 pub fn compile_expr(
     expr: LispExpr,
     state: &State,
 ) -> Result<Vec<Instr>, EvaluationError> {
-    // println!("compiling expr!");
-
     let mut vek = vec![];
 
     match expr {
@@ -126,10 +132,8 @@ pub fn compile_expr(
             unreachable!()
         }
         LispExpr::Call(mut expr_list, is_tail_call) => {
-            // step 1: remove head expression
             let head_expr = expr_list.remove(0);
 
-            // step 2: queue function evaluation with tail
             match head_expr {
                 LispExpr::Macro(LispMacro::Cond) => {
                     destructure!(expr_list, [boolean, true_expr, false_expr], {
@@ -166,10 +170,9 @@ pub fn compile_expr(
                         return Err(EvaluationError::ArgumentTypeMismatch);
                     }
                 )?,
-                LispExpr::Value(LispValue::Function(f @ LispFunc::BuiltIn(..))) => {
-                    // TODO: can we also do this for custom funcs? -- apparently yes!
-                    // TODO: reduce code duplication between this and EvalFunction
-                    vek.push(Instr::EvalFunctionEager(f, expr_list.len(), is_tail_call));
+                LispExpr::Value(LispValue::Function(LispFunc::BuiltIn(f))) => {
+                    let instr = builtin_instr(f, expr_list.len())?;
+                    vek.push(instr);
 
                     for expr in expr_list.into_iter().rev() {
                         let instr_vec = compile_expr(expr, state)?;
@@ -177,13 +180,9 @@ pub fn compile_expr(
                     }
                 }
                 _ => {
-                    // finally, eval function
                     vek.push(Instr::EvalFunction(expr_list.len(), is_tail_call));
-
-                    // then, queue evaluation of head (the function)
                     vek.extend(compile_expr(head_expr, state)?);
 
-                    // first, eval the arguments
                     for expr in expr_list.into_iter().rev() {
                         let instr_vec = compile_expr(expr, state)?;
                         vek.extend(instr_vec);
@@ -194,6 +193,20 @@ pub fn compile_expr(
     }
 
     Ok(vek)
+}
+
+fn builtin_instr(f: BuiltIn, arg_count: usize) -> Result<Instr, EvaluationError> {
+    Ok(match (f, arg_count) {
+        (BuiltIn::AddOne, 1) => Instr::AddOne,
+        (BuiltIn::SubOne, 1) => Instr::SubOne,
+        (BuiltIn::CheckZero, 1) => Instr::CheckZero,
+        (BuiltIn::CheckNull, 1) => Instr::CheckNull,
+        (BuiltIn::List, _) => Instr::List(arg_count),
+        (BuiltIn::Cons, 2) => Instr::Cons,
+        (BuiltIn::Car, 1) => Instr::Car,
+        (BuiltIn::Cdr, 1) => Instr::Cdr,
+        (_, _) => return Err(EvaluationError::ArgumentCountMismatch),
+    })
 }
 
 pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, EvaluationError> {
@@ -217,9 +230,7 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                 // the lambda body, we should resolve them before
                 // creating the lambda.
                 // This enables us to do closures.
-                let walked_body = body.replace_args(&return_values[current_stack..]);
-                //is_closure = is_closure || replaced_args;
-
+                let walked_body = body.replace_args(&return_values[current_stack..]);\
                 let f = LispFunc::new_custom(args, walked_body, state);
 
                 return_values.push(LispValue::Function(f));
@@ -258,6 +269,7 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                 current_stack = stack_pointers.pop().unwrap();
             }
             // Pops a function off the value stack and applies it
+            // TODO: we do not really need this any more! remove it!
             Instr::EvalFunction(expr_list_len, is_tail_call) => {
                 if let LispValue::Function(f) = return_values.pop().unwrap() {
                     instructions.push(Instr::EvalFunctionEager(f, expr_list_len, is_tail_call));
@@ -265,65 +277,56 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                     return Err(EvaluationError::NonFunctionApplication);
                 }
             }
-            Instr::EvalFunctionEager(func, arg_count, is_tail_call) => {
-                match func {
-                    LispFunc::BuiltIn(BuiltIn::List) => {
-                        let len = return_values.len();
-                        let new_vec = return_values.split_off(len - arg_count);
-                        return_values.push(LispValue::SubValue(new_vec));
+
+            Instr::List(arg_count) => {
+                let len = return_values.len();
+                let new_vec = return_values.split_off(len - arg_count);
+                return_values.push(LispValue::SubValue(new_vec));
+            }
+            Instr::Car => {
+                unitary_list(&mut return_values, |mut vec| match vec.pop() {
+                    Some(car) => Ok(car),
+                    None => Err(EvaluationError::EmptyList),
+                })?
+            }
+            Instr::Cdr => {
+                unitary_list(&mut return_values, |mut vec| match vec.pop() {
+                    Some(_) => Ok(LispValue::SubValue(vec)),
+                    None => Err(EvaluationError::EmptyList),
+                })?
+            }
+            Instr::CheckNull => {
+                unitary_list(&mut return_values, |vec| {
+                    Ok(LispValue::Boolean(vec.is_empty()))
+                })?
+            }
+            Instr::AddOne => {
+                unitary_int(&mut return_values, |i| Ok(LispValue::Integer(i + 1)))?
+            }
+            Instr::SubOne => {
+                unitary_int(&mut return_values, |i| if i > 0 {
+                    Ok(LispValue::Integer(i - 1))
+                } else {
+                    Err(EvaluationError::SubZero)
+                })?
+            }
+            Instr::Cons => {
+                if let LispValue::SubValue(mut new_vec) = return_values.pop().unwrap() {
+                    new_vec.push(return_values.pop().unwrap());
+                    return_values.push(LispValue::SubValue(new_vec));
+                } else {
+                    return Err(EvaluationError::ArgumentTypeMismatch);
+                }
+            }
+            Instr::CheckZero => {
+                unitary_int(&mut return_values, |i| Ok(LispValue::Boolean(i == 0)))?
+            }
+
+            Instr::EvalFunctionEager(funk, arg_count, is_tail_call) => {
+                match funk {
+                    LispFunc::BuiltIn(b) => {
+                        instructions.push(builtin_instr(b, arg_count)?)
                     }
-                    LispFunc::BuiltIn(BuiltIn::Car) => if arg_count == 1 {
-                        unitary_list(&mut return_values, |mut vec| match vec.pop() {
-                            Some(car) => Ok(car),
-                            None => Err(EvaluationError::EmptyList),
-                        })?
-                    } else {
-                        return Err(EvaluationError::ArgumentCountMismatch);
-                    },
-                    LispFunc::BuiltIn(BuiltIn::Cdr) => if arg_count == 1 {
-                        unitary_list(&mut return_values, |mut vec| match vec.pop() {
-                            Some(_) => Ok(LispValue::SubValue(vec)),
-                            None => Err(EvaluationError::EmptyList),
-                        })?
-                    } else {
-                        return Err(EvaluationError::ArgumentCountMismatch);
-                    },
-                    LispFunc::BuiltIn(BuiltIn::CheckNull) => if arg_count == 1 {
-                        unitary_list(&mut return_values, |vec| {
-                            Ok(LispValue::Boolean(vec.is_empty()))
-                        })?
-                    } else {
-                        return Err(EvaluationError::ArgumentCountMismatch);
-                    },
-                    LispFunc::BuiltIn(BuiltIn::AddOne) => if arg_count == 1 {                        
-                        unitary_int(&mut return_values, |i| Ok(LispValue::Integer(i + 1)))?
-                    } else {
-                        return Err(EvaluationError::ArgumentCountMismatch);
-                    },
-                    LispFunc::BuiltIn(BuiltIn::SubOne) => if arg_count == 1 {
-                        unitary_int(&mut return_values, |i| if i > 0 {
-                            Ok(LispValue::Integer(i - 1))
-                        } else {
-                            Err(EvaluationError::SubZero)
-                        })?
-                    } else {
-                        return Err(EvaluationError::ArgumentCountMismatch);
-                    },
-                    LispFunc::BuiltIn(BuiltIn::Cons) => if arg_count == 2 {
-                        if let LispValue::SubValue(mut new_vec) = return_values.pop().unwrap() {
-                            new_vec.push(return_values.pop().unwrap());
-                            return_values.push(LispValue::SubValue(new_vec));
-                        } else {
-                            return Err(EvaluationError::ArgumentTypeMismatch);
-                        }
-                    } else {
-                        return Err(EvaluationError::ArgumentCountMismatch);
-                    },
-                    LispFunc::BuiltIn(BuiltIn::CheckZero) => if arg_count == 1 {
-                        unitary_int(&mut return_values, |i| Ok(LispValue::Boolean(i == 0)))?
-                    } else {
-                        return Err(EvaluationError::ArgumentCountMismatch);
-                    },
                     LispFunc::Custom(mut f) => {
                         // Too many arguments or none at all.
                         if f.arg_count < arg_count || arg_count == 0 {
@@ -362,6 +365,7 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                     }
                 }
             }
+
             Instr::PopAndSet(var_name) => {
                 state.set_variable(&var_name, return_values.pop().unwrap());
                 return_values.push(LispValue::SubValue(Vec::new()));
