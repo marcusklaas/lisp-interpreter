@@ -72,9 +72,12 @@ fn unitary_int<F: Fn(u64) -> Result<LispValue, EvaluationError>>(
     stack: &mut Vec<LispValue>,
     f: F,
 ) -> Result<(), EvaluationError> {
-    match stack.pop().unwrap() {
-        LispValue::Integer(i) => Ok(stack.push(f(i)?)),
-        _ => Err(EvaluationError::ArgumentTypeMismatch),
+    let reference = stack.last_mut().unwrap();
+
+    if let &mut LispValue::Integer(i) = reference {
+        Ok(*reference = f(i)?)
+    } else {
+        Err(EvaluationError::ArgumentTypeMismatch)
     }
 }
 
