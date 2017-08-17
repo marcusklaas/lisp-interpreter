@@ -107,10 +107,10 @@ pub enum LispFunc {
 }
 
 impl LispFunc {
-    pub fn new_custom(args: Vec<String>, body: LispExpr, state: &State) -> LispFunc {
+    pub fn new_custom(args: &[&str], body: LispExpr, state: &State) -> LispFunc {
         LispFunc::Custom(CustomFunc {
             arg_count: args.len(),
-            body: Rc::new(body.transform(&args[..], state, true)),
+            body: Rc::new(body.transform(args, state, true)),
             byte_code: Rc::new(RefCell::new(None)),
         })
     }
@@ -217,7 +217,7 @@ impl LispExpr {
     // Prepares a LispExpr for use in a lambda body, by mapping
     // variables to references argument indices and checking what
     // calls are tail calls.
-    pub fn transform(self, args: &[String], state: &State, can_tail_call: bool) -> LispExpr {
+    pub fn transform(self, args: &[&str], state: &State, can_tail_call: bool) -> LispExpr {
         match self {
             x @ LispExpr::Value(_) => x,
             x @ LispExpr::Macro(_) => x,
@@ -256,14 +256,14 @@ impl LispExpr {
     }
 
     // Resolves references to function arguments. Used when creating closures.
-    pub fn replace_args(self, stack: &[LispValue]) -> LispExpr {
-        match self {
+    pub fn replace_args(&self, stack: &[LispValue]) -> LispExpr {
+        match *self {
             LispExpr::Argument(index) => LispExpr::Value(stack[index].clone()),
-            LispExpr::Call(vec, is_tail_call) => LispExpr::Call(
-                vec.into_iter().map(|e| e.replace_args(stack)).collect(),
+            LispExpr::Call(ref vec, is_tail_call) => LispExpr::Call(
+                vec.iter().map(|e| e.replace_args(stack)).collect(),
                 is_tail_call,
             ),
-            x => x,
+            ref x => x.clone(),
         }
     }
 }
