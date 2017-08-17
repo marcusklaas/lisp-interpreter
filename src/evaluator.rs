@@ -179,7 +179,7 @@ pub fn compile_expr(expr: LispExpr, state: &State) -> Result<Vec<Instr>, Evaluat
                         let instr_vec = compile_expr(expr, state)?;
                         vek.extend(instr_vec);
                     }
-                } 
+                }
             }
         }
     }
