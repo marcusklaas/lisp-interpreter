@@ -5,7 +5,8 @@ authors = ["Marcus Klaas <mail@marcusklaas.nl>"]
 
 [dependencies]
 rustyline = "*"
-smallvec = "*"
+custom_derive = "*"
+enum_derive = "*"
 clippy = {version = "*", optional = true}
 
 [features]
@@ -16,3 +17,8 @@ name = "yalp"
 
 [[bin]]
 name = "yalp"
+
+[profile.release]
+debug = false
+lto = true
+

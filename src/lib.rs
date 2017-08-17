@@ -3,30 +3,116 @@
 #![feature(test, splice)]
 
 extern crate test;
-extern crate smallvec;
+#[macro_use]
+extern crate custom_derive;
+#[macro_use]
+extern crate enum_derive;
 
 pub mod parse;
 pub mod evaluator;
 
 use std::fmt;
-use evaluator::State;
+use std::iter::repeat;
 use std::rc::Rc;
+use std::cell::RefCell;
+use evaluator::{compile_expr, Instr, State};
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CustomFunc {
+    arg_count: usize,
+    body: Rc<LispExpr>,
+    byte_code: Rc<RefCell<Option<Vec<Instr>>>>,
+}
+
+impl CustomFunc {
+    // FIXME: do a pass reducing the number of clones and stuff
+    pub fn compile(&mut self, state: &State) -> Result<Vec<Instr>, EvaluationError> {
+        {
+            if let Some(ref vek) = *self.byte_code.borrow() {
+                return Ok(vek.clone());
+            }
+        }
+
+        let new_bytes = compile_expr((&*self.body).clone(), state)?;
+        *(self.byte_code.borrow_mut()) = Some(new_bytes.clone());
+        Ok(new_bytes)
+    }
+
+    pub fn pretty_print(&self, indent: usize) -> String {
+        let mut result = String::new();
+
+        for i in 0..self.arg_count {
+            if i > 0 {
+                result.push(' ');
+            }
+            result.push_str(&format!("${}", i));
+        }
+
+        result.push_str(&format!(" ->\n{}", indent_to_string(indent + 1)));
+        result + &self.body.pretty_print(indent + 1)
+    }
+}
+
+custom_derive! {
+    #[derive(PartialEq, Eq, Debug, Clone, Copy, IterVariants(BuiltInVariants))]
+    pub enum BuiltIn {
+        AddOne,
+        SubOne,
+        Cons,
+        Cdr,
+        Car,
+        List,
+        CheckZero,
+        CheckNull,
+    }
+}
+
+impl BuiltIn {
+    fn from_str(s: &str) -> Option<BuiltIn> {
+        match s {
+            "add1" => Some(BuiltIn::AddOne),
+            "sub1" => Some(BuiltIn::SubOne),
+            "cons" => Some(BuiltIn::Cons),
+            "cdr" => Some(BuiltIn::Cdr),
+            "car" => Some(BuiltIn::Car),
+            "list" => Some(BuiltIn::List),
+            "zero?" => Some(BuiltIn::CheckZero),
+            "null?" => Some(BuiltIn::CheckNull),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for BuiltIn {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let str = match *self {
+            BuiltIn::AddOne => "add1",
+            BuiltIn::SubOne => "sub1",
+            BuiltIn::Cons => "cons",
+            BuiltIn::Cdr => "cdr",
+            BuiltIn::Car => "car",
+            BuiltIn::List => "list",
+            BuiltIn::CheckZero => "zero?",
+            BuiltIn::CheckNull => "null?",
+        };
+
+        write!(f, "{}", str)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LispFunc {
-    BuiltIn(&'static str),
-    Custom {
-        arg_count: usize,
-        body: LispExpr,
-    },
+    BuiltIn(BuiltIn),
+    Custom(CustomFunc),
 }
 
 impl LispFunc {
     pub fn new_custom(args: Vec<String>, body: LispExpr, state: &State) -> LispFunc {
-        LispFunc::Custom {
+        LispFunc::Custom(CustomFunc {
             arg_count: args.len(),
-            body: body.transform(&args[..], state, true),
-        }
+            body: Rc::new(body.transform(&args[..], state, true)),
+            byte_code: Rc::new(RefCell::new(None)),
+        })
     }
 
     pub fn create_continuation(
@@ -36,33 +122,58 @@ impl LispFunc {
         stack: &[LispValue],
     ) -> LispFunc {
         let arg_count = total_args - supplied_args;
-        let mut call_vec = vec![LispExpr::Value(LispValue::Function(Rc::new(f)))];
+        let mut call_vec = vec![LispExpr::Value(LispValue::Function(f))];
         call_vec.extend(stack[..supplied_args].iter().cloned().map(LispExpr::Value));
         call_vec.extend((0..total_args - supplied_args).map(LispExpr::Argument));
 
-        LispFunc::Custom {
+        LispFunc::Custom(CustomFunc {
             arg_count: arg_count,
-            body: LispExpr::Call(call_vec, true),
+            body: Rc::new(LispExpr::Call(call_vec, true)),
+            byte_code: Rc::new(RefCell::new(None)),
+        })
+    }
+
+    pub fn pretty_print(&self, indent: usize) -> String {
+        match *self {
+            LispFunc::BuiltIn(name) => format!("{:?}", name),
+            LispFunc::Custom(ref c) => c.pretty_print(indent),
         }
     }
+}
+
+fn indent_to_string(indent: usize) -> String {
+    repeat(' ').take(indent * 4).collect()
 }
 
 impl fmt::Display for LispFunc {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
-            LispFunc::BuiltIn(name) => write!(f, "{}", name),
-            LispFunc::Custom {
-                arg_count,
-                ref body,
-            } => write!(f, "{} -> {}", arg_count, body),
+        write!(f, "{}", self.pretty_print(0))
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum LispMacro {
+    Define,
+    Cond,
+    Lambda,
+}
+
+impl LispMacro {
+    fn from_str(s: &str) -> Option<LispMacro> {
+        match s {
+            "define" => Some(LispMacro::Define),
+            "cond" => Some(LispMacro::Cond),
+            "lambda" => Some(LispMacro::Lambda),
+            _ => None,
         }
     }
 }
 
-// TODO: expressions with opvars / arguments should probably have their
+// TODO: expressions with opvars / macros / arguments should probably have their
 //       own type at some point.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LispExpr {
+    Macro(LispMacro),
     Value(LispValue),
     OpVar(String),
     // Offset from stack pointer on the return_values stack.
@@ -73,12 +184,43 @@ pub enum LispExpr {
 }
 
 impl LispExpr {
+    pub fn pretty_print(&self, indent: usize) -> String {
+        match *self {
+            LispExpr::Argument(ref offset) => format!("${}", offset),
+            LispExpr::Value(ref v) => v.pretty_print(indent),
+            LispExpr::OpVar(ref name) => name.clone(),
+            LispExpr::Macro(ref mac) => format!("{:?}", mac),
+            LispExpr::Call(ref expr_vec, is_tail_call) => {
+                let mut result = String::new();
+
+                if is_tail_call {
+                    result.push('t');
+                }
+
+                result.push('{');
+
+                for (idx, expr) in expr_vec.iter().enumerate() {
+                    if idx > 0 {
+                        result.push('\n');
+                        result.push_str(&indent_to_string(indent));
+                    }
+
+                    result.push_str(&expr.pretty_print(indent));
+                }
+
+                result.push('}');
+                result
+            }
+        }
+    }
+
     // Prepares a LispExpr for use in a lambda body, by mapping
     // variables to references argument indices and checking what
     // calls are tail calls.
     pub fn transform(self, args: &[String], state: &State, can_tail_call: bool) -> LispExpr {
         match self {
             x @ LispExpr::Value(_) => x,
+            x @ LispExpr::Macro(_) => x,
             // This should not be possible. We shouldn't transform
             // an expression twice without resolving the arguments first.
             LispExpr::Argument(_) => unreachable!(),
@@ -97,11 +239,7 @@ impl LispExpr {
                 let do_tail_call = match (can_tail_call, vec.get(0)) {
                     // Special case for `cond`. Even though it is a function,
                     // its child expressions can still be tail calls.
-                    (true, Some(&LispExpr::OpVar(ref name))) => name == "cond" && vec.len() == 4,
-                    (
-                        true,
-                        Some(&LispExpr::Value(LispValue::Function(LispFunc::BuiltIn("cond")))),
-                    ) => vec.len() == 4,
+                    (true, Some(&LispExpr::Macro(LispMacro::Cond))) => vec.len() == 4,
                     _ => false,
                 };
                 let tail_call_iter = (0..).map(|i| (i == 2 || i == 3) && do_tail_call);
@@ -132,28 +270,7 @@ impl LispExpr {
 
 impl fmt::Display for LispExpr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
-            LispExpr::Argument(ref offset) => write!(f, "${}", offset),
-            LispExpr::Value(ref v) => write!(f, "{}", v),
-            LispExpr::OpVar(ref name) => write!(f, "{}", name),
-            LispExpr::Call(ref expr_vec, is_tail_call) => {
-                if is_tail_call {
-                    write!(f, "t")?;
-                }
-
-                write!(f, "(")?;
-
-                for (idx, expr) in expr_vec.iter().enumerate() {
-                    if idx > 0 {
-                        write!(f, " ")?;
-                    }
-
-                    write!(f, "{}", expr)?;
-                }
-
-                write!(f, ")")
-            }
-        }
+        write!(f, "{}", self.pretty_print(0))
     }
 }
 
@@ -171,57 +288,42 @@ pub enum EvaluationError {
     TestOneTwoThree,
 }
 
-#[derive(Clone, Copy, Eq, Hash, PartialEq)]
-enum ValueType {
-    Boolean,
-    Integer,
-    List,
-    Function,
-}
-
-// TODO: add some convenience function for creating functions?
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LispValue {
     Boolean(bool),
     Integer(u64),
-    Function(Rc<LispFunc>),
-    // TODO: this should be renamed to List
-    SubValue(Vec<LispValue>),
+    Function(LispFunc),
+    List(Vec<LispValue>),
 }
 
 impl LispValue {
-    fn get_type(&self) -> ValueType {
+    pub fn pretty_print(&self, indent: usize) -> String {
         match *self {
-            LispValue::Boolean(..) => ValueType::Boolean,
-            LispValue::Integer(..) => ValueType::Integer,
-            LispValue::Function(..) => ValueType::Function,
-            LispValue::SubValue(..) => ValueType::List,
+            LispValue::Function(ref func) => format!("[{}]", func.pretty_print(indent)),
+            LispValue::Integer(i) => i.to_string(),
+            LispValue::Boolean(true) => "#t".into(),
+            LispValue::Boolean(false) => "#f".into(),
+            LispValue::List(ref vec) => {
+                let mut result = "(".to_string();
+
+                for (idx, val) in vec.iter().enumerate() {
+                    if idx > 0 {
+                        result.push(' ');
+                    }
+
+                    result.push_str(&val.pretty_print(indent));
+                }
+
+                result.push(')');
+                result
+            }
         }
     }
 }
 
 impl fmt::Display for LispValue {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
-            LispValue::Function(ref func) => write!(f, "func[{}]", func),
-            LispValue::Integer(i) => write!(f, "{}", i),
-            LispValue::Boolean(true) => write!(f, "#t"),
-            LispValue::Boolean(false) => write!(f, "#f"),
-            LispValue::SubValue(ref vec) => {
-                write!(f, "(")?;
-
-                for (idx, val) in vec.iter().enumerate() {
-                    if idx > 0 {
-                        write!(f, " ")?;
-                    }
-
-                    write!(f, "{}", val)?;
-                }
-
-                write!(f, ")")
-            }
-        }
-
+        write!(f, "{}", self.pretty_print(0))
     }
 }
 
@@ -279,12 +381,14 @@ mod tests {
         assert_eq!(expected_err, check_lisp(commands).unwrap_err());
     }
 
+    // TODO: add test to make sure that add is tail call optimized
+
     #[test]
     fn transform_expr() {
         let expr = LispExpr::Call(
             vec![
                 LispExpr::OpVar("x".into()),
-                LispExpr::OpVar("#t".into()),
+                LispExpr::Value(LispValue::Boolean(true)),
                 LispExpr::Call(
                     vec![
                         LispExpr::Value(LispValue::Integer(5)),
@@ -324,7 +428,7 @@ mod tests {
 
     #[test]
     fn display_list_val() {
-        let val = LispValue::SubValue(vec![LispValue::Integer(1), LispValue::SubValue(vec![])]);
+        let val = LispValue::List(vec![LispValue::Integer(1), LispValue::List(vec![])]);
         assert_eq!("(1 ())", val.to_string());
     }
 
@@ -412,10 +516,18 @@ mod tests {
     }
 
     #[test]
+    fn non_function_app() {
+        check_lisp_err(
+            vec!["(10 3)"],
+            LispError::Evaluation(EvaluationError::NonFunctionApplication),
+        );
+    }
+
+    #[test]
     fn unexpected_operator() {
         check_lisp_err(
-            vec!["(10 + 3)"],
-            LispError::Evaluation(EvaluationError::NonFunctionApplication),
+            vec!["(cond cond cond cond)"],
+            LispError::Evaluation(EvaluationError::UnexpectedOperator),
         );
     }
 
@@ -494,6 +606,11 @@ mod tests {
             ],
             "(11 12 13 14 15 16 17 18 19 20)",
         );
+    }
+
+    #[test]
+    fn list_closure() {
+        assert!(check_lisp(vec!["(list add1 ((lambda (f x) (f x)) sub1))"]).is_ok());
     }
 
     #[test]

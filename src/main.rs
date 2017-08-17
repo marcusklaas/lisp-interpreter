@@ -21,16 +21,40 @@ const PRELUDE: &'static [&'static str] = &[
     "(define sort (lambda (l) (cond (null? l) l (append (cons (car l) (sort (filter (lambda (x) (not (> x (car l)))) (cdr l)))) (sort (filter (lambda (x) (> x (car l))) l))))))",
 ];
 
+fn exec_command(s: &str, state: &mut State) {
+    let parse_result = parse_lisp_string(s);
+
+    match parse_result {
+        Ok(ref expr) => match yalp::evaluator::eval(expr, state) {
+            Ok(val) => {
+                println!("{}", &val);
+                state.set_variable(":last", val);
+            }
+            Err(eval_err) => println!("Evaluation error: {:?}", eval_err),
+        },
+        Err(ref parse_err) => {
+            println!("Parse error: {:?}", parse_err);
+        }
+    }
+}
+
 fn main() {
     let mut rl = rustyline::Editor::<()>::new();
     let mut state = State::new();
+    let args = ::std::env::args().skip(1).collect::<Vec<String>>();
 
-    if ::std::env::args().skip(1).collect::<Vec<String>>() != vec!["--no-prelude"] {
+    if !args.contains(&"--no-prelude".to_owned()) {
         for def in PRELUDE {
             let parse_res = parse_lisp_string(def).expect("Prelude statement failed to parse!");
             yalp::evaluator::eval(&parse_res, &mut state)
                 .expect("Prelude statement failed to execute!");
         }
+    }
+
+    if args.contains(&"-e".to_owned()) {
+        let lit = &args.last().unwrap()[..];
+
+        return exec_command(lit, &mut state);
     }
 
     loop {
@@ -42,24 +66,7 @@ fn main() {
             }
             Ok(ref line) => {
                 rl.add_history_entry(line);
-
-                let parse_result = parse_lisp_string(line);
-
-                match parse_result {
-                    Ok(ref expr) => {
-                        //match evaluate_lisp_expr(expr, &mut state) {
-                        match yalp::evaluator::eval(expr, &mut state) {
-                            Ok(val) => {
-                                println!("{}", &val);
-                                state.set_variable(":last", val);
-                            }
-                            Err(eval_err) => println!("Evaluation error: {:?}", eval_err),
-                        }
-                    }
-                    Err(ref parse_err) => {
-                        println!("Parse error: {:?}", parse_err);
-                    }
-                }
+                exec_command(line, &mut state);
             }
             Err(..) => {
                 break;
