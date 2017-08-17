@@ -118,8 +118,7 @@ pub fn compile_expr(expr: LispExpr, state: &State) -> Result<Vec<Instr>, Evaluat
             vek.push(Instr::PushValue(v));
         }
         LispExpr::OpVar(n) => {
-            let val = state.get_index(&n);
-            if let Some(i) = val {
+            if let Some(i) = state.get_index(&n) {
                 vek.push(Instr::PushVariable(i));
             } else {
                 return Err(EvaluationError::UnknownVariable(n));
@@ -254,7 +253,6 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
             Instr::PushVariable(i) => {
                 return_values.push(state.get(i));
             }
-
             Instr::PopState => {
                 let val = return_values.pop().unwrap();
 
@@ -272,7 +270,6 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                     return Err(EvaluationError::NonFunctionApplication);
                 }
             }
-
             Instr::List(arg_count) => {
                 let len = return_values.len();
                 let new_vec = return_values.split_off(len - arg_count);
@@ -304,7 +301,6 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
             Instr::CheckZero => {
                 unitary_int(&mut return_values, |i| Ok(LispValue::Boolean(i == 0)))?
             }
-
             Instr::EvalFunctionEager(funk, arg_count, is_tail_call) => {
                 match funk {
                     LispFunc::BuiltIn(b) => instructions.push(builtin_instr(b, arg_count)?),
@@ -346,7 +342,6 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                     }
                 }
             }
-
             Instr::PopAndSet(var_name) => {
                 state.set_variable(&var_name, return_values.pop().unwrap());
                 return_values.push(LispValue::List(Vec::new()));

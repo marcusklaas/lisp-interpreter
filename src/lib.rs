@@ -12,6 +12,7 @@ pub mod parse;
 pub mod evaluator;
 
 use std::fmt;
+use std::iter::repeat;
 use std::rc::Rc;
 use std::cell::RefCell;
 use evaluator::{compile_expr, Instr, State};
@@ -141,7 +142,7 @@ impl LispFunc {
 }
 
 fn indent_to_string(indent: usize) -> String {
-    ::std::iter::repeat(' ').take(indent * 4).collect()
+    repeat(' ').take(indent * 4).collect()
 }
 
 impl fmt::Display for LispFunc {
