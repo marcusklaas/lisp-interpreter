@@ -17,3 +17,8 @@ name = "yalp"
 
 [[bin]]
 name = "yalp"
+
+[profile.release]
+debug = true
+lto = false
+

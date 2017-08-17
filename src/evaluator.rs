@@ -4,22 +4,36 @@ use std::iter;
 
 #[derive(Debug, Clone)]
 pub struct State {
-    bound: HashMap<String, LispValue>,
+    index_map: HashMap<String, usize>,
+    store: Vec<LispValue>,
 }
 
 impl State {
     pub fn new() -> State {
         State {
-            bound: HashMap::new(),
+            index_map: HashMap::new(),
+            store: Vec::new(),
         }
     }
 
+    // FIXME: this store business may be totally unnecessary
+
+    pub fn get_index(&self, var_name: &str) -> Option<usize> {
+        self.index_map.get(var_name).cloned()
+    }
+
+    pub fn get(&self, index: usize) -> LispValue {
+        self.store[index].clone()
+    }
+
     pub fn get_variable_value(&self, var_name: &str) -> Option<LispValue> {
-        self.bound.get(var_name).cloned()
+        self.index_map.get(var_name).map(|&index| self.store[index].clone())
     }
 
     pub fn set_variable(&mut self, var_name: &str, val: LispValue) {
-        self.bound.insert(var_name.into(), val);
+        let index = self.store.len();
+        self.index_map.insert(var_name.into(), index);
+        self.store.push(val);
     }
 }
 
@@ -27,11 +41,13 @@ impl State {
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Instr {
     // Function and argument vector, Tail call
-    EvalFunction(Vec<LispExpr>, bool),
+    EvalFunction(usize, bool),
     PopAndSet(String),
     PopState,
     // Function, Argument Count, Tail call
     EvalFunctionEager(LispFunc, usize, bool),
+    // Argument List, LispExpr
+    CreateLambda(Vec<LispExpr>, LispExpr),
 
     // Removes top n instructions from stack
     PopInstructions(usize),
@@ -39,7 +55,8 @@ pub enum Instr {
     CondPopInstructions(usize),
     PushValue(LispValue),
     CloneValue(usize),
-    PushVariable(String),
+    // Index in state
+    PushVariable(usize),
 }
 
 fn unitary_int<F: Fn(u64) -> Result<LispValue, EvaluationError>>(
@@ -83,11 +100,11 @@ macro_rules! destructure {
 //       are dealing with a closure
 pub fn compile_expr(
     expr: LispExpr,
-    stack: &[LispValue],
     state: &State,
-) -> Result<(bool, Vec<Instr>), EvaluationError> {
+) -> Result<Vec<Instr>, EvaluationError> {
+    // println!("compiling expr!");
+
     let mut vek = vec![];
-    let mut is_closure = false;
 
     match expr {
         LispExpr::Argument(offset) => {
@@ -97,7 +114,12 @@ pub fn compile_expr(
             vek.push(Instr::PushValue(v));
         }
         LispExpr::OpVar(n) => {
-            vek.push(Instr::PushVariable(n));
+            let val = state.get_index(&n);
+            if let Some(i) = val {
+                vek.push(Instr::PushVariable(i));
+            } else {
+                return Err(EvaluationError::UnknownVariable(n));
+            }
         }
         LispExpr::Macro(..) => {
             // FIXME: this is reachable - just return an error
@@ -111,8 +133,8 @@ pub fn compile_expr(
             match head_expr {
                 LispExpr::Macro(LispMacro::Cond) => {
                     destructure!(expr_list, [boolean, true_expr, false_expr], {
-                        let true_expr_vec = compile_expr(true_expr, stack, state)?.1;
-                        let false_expr_vec = compile_expr(false_expr, stack, state)?.1;
+                        let true_expr_vec = compile_expr(true_expr, state)?;
+                        let false_expr_vec = compile_expr(false_expr, state)?;
                         let true_expr_len = true_expr_vec.len();
                         let false_expr_len = false_expr_vec.len();
 
@@ -120,7 +142,7 @@ pub fn compile_expr(
                         vek.push(Instr::PopInstructions(true_expr_len));
                         vek.extend(false_expr_vec);
                         vek.push(Instr::CondPopInstructions(false_expr_len + 1));
-                        vek.extend(compile_expr(boolean, stack, state)?.1);
+                        vek.extend(compile_expr(boolean, state)?);
                     })?
                 }
                 LispExpr::Macro(LispMacro::Lambda) => {
@@ -128,24 +150,7 @@ pub fn compile_expr(
                         expr_list,
                         [arg_list, body],
                         if let LispExpr::Call(arg_vec, _is_tail_call) = arg_list {
-                            let args = arg_vec
-                                .into_iter()
-                                .map(|expr| match expr {
-                                    LispExpr::OpVar(name) => Ok(name),
-                                    _ => Err(EvaluationError::MalformedDefinition),
-                                })
-                                .collect::<Result<Vec<_>, _>>()?;
-
-                            // If there are any references to function arguments in
-                            // the lambda body, we should resolve them before
-                            // creating the lambda.
-                            // This enables us to do closures.
-                            let (replaced_args, walked_body) = body.replace_args(stack);
-                            is_closure = is_closure || replaced_args;
-
-                            let f = LispFunc::new_custom(args, walked_body, state);
-
-                            vek.push(Instr::PushValue(LispValue::Function(f)));
+                            vek.push(Instr::CreateLambda(arg_vec, body));
                         } else {
                             return Err(EvaluationError::ArgumentTypeMismatch);
                         }
@@ -156,34 +161,69 @@ pub fn compile_expr(
                     [var_name, definition],
                     if let LispExpr::OpVar(name) = var_name {
                         vek.push(Instr::PopAndSet(name));
-                        vek.extend(compile_expr(definition, stack, state)?.1);
+                        vek.extend(compile_expr(definition, state)?);
                     } else {
                         return Err(EvaluationError::ArgumentTypeMismatch);
                     }
                 )?,
-                _ => {
-                    vek.push(Instr::EvalFunction(expr_list, is_tail_call));
+                LispExpr::Value(LispValue::Function(f @ LispFunc::BuiltIn(..))) => {
+                    // TODO: can we also do this for custom funcs? -- apparently yes!
+                    // TODO: reduce code duplication between this and EvalFunction
+                    vek.push(Instr::EvalFunctionEager(f, expr_list.len(), is_tail_call));
 
-                    // step 3: queue evaluation of head
-                    vek.extend(compile_expr(head_expr, stack, state)?.1);
+                    for expr in expr_list.into_iter().rev() {
+                        let instr_vec = compile_expr(expr, state)?;
+                        vek.extend(instr_vec);
+                    }
+                }
+                _ => {
+                    // finally, eval function
+                    vek.push(Instr::EvalFunction(expr_list.len(), is_tail_call));
+
+                    // then, queue evaluation of head (the function)
+                    vek.extend(compile_expr(head_expr, state)?);
+
+                    // first, eval the arguments
+                    for expr in expr_list.into_iter().rev() {
+                        let instr_vec = compile_expr(expr, state)?;
+                        vek.extend(instr_vec);
+                    }
                 } 
             }
         }
     }
 
-    Ok((is_closure, vek))
+    Ok(vek)
 }
 
 pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, EvaluationError> {
     let mut return_values: Vec<LispValue> = Vec::new();
-    let mut instructions = compile_expr(expr.clone(), &return_values[..], state)?.1;
+    let mut instructions = compile_expr(expr.clone(), state)?;
     let mut stack_pointers = vec![];
     let mut current_stack = 0;
 
     while let Some(instr) = instructions.pop() {
-        // println!("stack len: {}, instruction: {:?}", return_values.len(), instr);
-
         match instr {
+            Instr::CreateLambda(arg_vec, body) => {
+                let args = arg_vec
+                    .into_iter()
+                    .map(|expr| match expr {
+                        LispExpr::OpVar(name) => Ok(name),
+                        _ => Err(EvaluationError::MalformedDefinition),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                // If there are any references to function arguments in
+                // the lambda body, we should resolve them before
+                // creating the lambda.
+                // This enables us to do closures.
+                let walked_body = body.replace_args(&return_values[current_stack..]);
+                //is_closure = is_closure || replaced_args;
+
+                let f = LispFunc::new_custom(args, walked_body, state);
+
+                return_values.push(LispValue::Function(f));
+            }
             Instr::PopInstructions(n) => {
                 let new_len = instructions.len() - n;
                 instructions.truncate(new_len);
@@ -205,11 +245,9 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                 let value = return_values[index].clone();
                 return_values.push(value);
             }
-            Instr::PushVariable(n) => if let Some(v) = state.get_variable_value(&n) {
-                return_values.push(v);
-            } else {
-                return Err(EvaluationError::UnknownVariable(n));
-            },
+            Instr::PushVariable(i) => {
+                return_values.push(state.get(i));
+            }
 
             Instr::PopState => {
                 let val = return_values.pop().unwrap();
@@ -220,16 +258,9 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                 current_stack = stack_pointers.pop().unwrap();
             }
             // Pops a function off the value stack and applies it
-            Instr::EvalFunction(expr_list, is_tail_call) => {
+            Instr::EvalFunction(expr_list_len, is_tail_call) => {
                 if let LispValue::Function(f) = return_values.pop().unwrap() {
-                    // Eager argument evaluation: evaluate all arguments before
-                    // calling the function.
-                    instructions.push(Instr::EvalFunctionEager(f, expr_list.len(), is_tail_call));
-
-                    for expr in expr_list.into_iter().rev() {
-                        let instr_vec = compile_expr(expr, &return_values[current_stack..], state)?.1;
-                        instructions.extend(instr_vec);
-                    }
+                    instructions.push(Instr::EvalFunctionEager(f, expr_list_len, is_tail_call));
                 } else {
                     return Err(EvaluationError::NonFunctionApplication);
                 }
@@ -293,7 +324,6 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                     } else {
                         return Err(EvaluationError::ArgumentCountMismatch);
                     },
-                    // LispFunc::BuiltIn(n) => return Err(EvaluationError::UnknownVariable(n.to_string())),
                     LispFunc::Custom(mut f) => {
                         // Too many arguments or none at all.
                         if f.arg_count < arg_count || arg_count == 0 {
@@ -319,21 +349,15 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                         }
                         // Exactly right number of arguments. Let's evaluate.
                         else if is_tail_call {
-                            // println!("doing tail call");
-
                             // Remove old arguments of the stack.
                             let top_index = return_values.len() - arg_count;
                             return_values.splice(current_stack..top_index, iter::empty());
-                            let byte_code = f.compile(&return_values[current_stack..], state)?;
-
-                            instructions.extend(byte_code);
+                            instructions.extend(f.compile(state)?);
                         } else {
                             stack_pointers.push(current_stack);
                             current_stack = return_values.len() - arg_count;
-                            let byte_code = f.compile(&return_values[current_stack..], state)?;
-
                             instructions.push(Instr::PopState);
-                            instructions.extend(byte_code);
+                            instructions.extend(f.compile(state)?);
                         }
                     }
                 }
