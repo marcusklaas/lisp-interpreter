@@ -17,7 +17,6 @@ impl State {
     }
 
     // FIXME: this store business may be totally unnecessary
-
     pub fn get_index(&self, var_name: &str) -> Option<usize> {
         self.index_map.get(var_name).cloned()
     }
@@ -84,7 +83,7 @@ fn unitary_list<F: Fn(Vec<LispValue>) -> Result<LispValue, EvaluationError>>(
     f: F,
 ) -> Result<(), EvaluationError> {
     match stack.pop().unwrap() {
-        LispValue::SubValue(v) => Ok(stack.push(f(v)?)),
+        LispValue::List(v) => Ok(stack.push(f(v)?)),
         _ => Err(EvaluationError::ArgumentTypeMismatch),
     }
 }
@@ -128,8 +127,7 @@ pub fn compile_expr(
             }
         }
         LispExpr::Macro(..) => {
-            // FIXME: this is reachable - just return an error
-            unreachable!()
+            return Err(EvaluationError::UnexpectedOperator);
         }
         LispExpr::Call(mut expr_list, is_tail_call) => {
             let head_expr = expr_list.remove(0);
@@ -230,7 +228,7 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                 // the lambda body, we should resolve them before
                 // creating the lambda.
                 // This enables us to do closures.
-                let walked_body = body.replace_args(&return_values[current_stack..]);\
+                let walked_body = body.replace_args(&return_values[current_stack..]);
                 let f = LispFunc::new_custom(args, walked_body, state);
 
                 return_values.push(LispValue::Function(f));
@@ -281,7 +279,7 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
             Instr::List(arg_count) => {
                 let len = return_values.len();
                 let new_vec = return_values.split_off(len - arg_count);
-                return_values.push(LispValue::SubValue(new_vec));
+                return_values.push(LispValue::List(new_vec));
             }
             Instr::Car => {
                 unitary_list(&mut return_values, |mut vec| match vec.pop() {
@@ -291,7 +289,7 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
             }
             Instr::Cdr => {
                 unitary_list(&mut return_values, |mut vec| match vec.pop() {
-                    Some(_) => Ok(LispValue::SubValue(vec)),
+                    Some(_) => Ok(LispValue::List(vec)),
                     None => Err(EvaluationError::EmptyList),
                 })?
             }
@@ -311,9 +309,9 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                 })?
             }
             Instr::Cons => {
-                if let LispValue::SubValue(mut new_vec) = return_values.pop().unwrap() {
+                if let LispValue::List(mut new_vec) = return_values.pop().unwrap() {
                     new_vec.push(return_values.pop().unwrap());
-                    return_values.push(LispValue::SubValue(new_vec));
+                    return_values.push(LispValue::List(new_vec));
                 } else {
                     return Err(EvaluationError::ArgumentTypeMismatch);
                 }
@@ -368,7 +366,7 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
 
             Instr::PopAndSet(var_name) => {
                 state.set_variable(&var_name, return_values.pop().unwrap());
-                return_values.push(LispValue::SubValue(Vec::new()));
+                return_values.push(LispValue::List(Vec::new()));
             }
         }
     }

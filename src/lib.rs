@@ -287,14 +287,12 @@ pub enum EvaluationError {
     TestOneTwoThree,
 }
 
-// TODO: add some convenience function for creating functions?
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LispValue {
     Boolean(bool),
     Integer(u64),
     Function(LispFunc),
-    // TODO: this should be renamed to List
-    SubValue(Vec<LispValue>),
+    List(Vec<LispValue>),
 }
 
 impl LispValue {
@@ -304,7 +302,7 @@ impl LispValue {
             LispValue::Integer(i) => i.to_string(),
             LispValue::Boolean(true) => "#t".into(),
             LispValue::Boolean(false) => "#f".into(),
-            LispValue::SubValue(ref vec) => {
+            LispValue::List(ref vec) => {
                 let mut result = "(".to_string();
 
                 for (idx, val) in vec.iter().enumerate() {
@@ -429,7 +427,7 @@ mod tests {
 
     #[test]
     fn display_list_val() {
-        let val = LispValue::SubValue(vec![LispValue::Integer(1), LispValue::SubValue(vec![])]);
+        let val = LispValue::List(vec![LispValue::Integer(1), LispValue::List(vec![])]);
         assert_eq!("(1 ())", val.to_string());
     }
 
@@ -517,10 +515,18 @@ mod tests {
     }
 
     #[test]
-    fn unexpected_operator() {
+    fn non_function_app() {
         check_lisp_err(
             vec!["(10 3)"],
             LispError::Evaluation(EvaluationError::NonFunctionApplication),
+        );
+    }
+
+    #[test]
+    fn unexpected_operator() {
+        check_lisp_err(
+            vec!["(cond cond cond cond)"],
+            LispError::Evaluation(EvaluationError::UnexpectedOperator),
         );
     }
 
