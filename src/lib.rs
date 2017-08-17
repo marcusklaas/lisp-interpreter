@@ -26,7 +26,7 @@ pub struct CustomFunc {
 
 impl CustomFunc {
     // FIXME: do a pass reducing the number of clones and stuff
-    pub fn compile(&mut self, state: &State) -> Result<Vec<Instr>, EvaluationError> {
+    pub fn compile(&self, state: &State) -> Result<Vec<Instr>, EvaluationError> {
         {
             if let Some(ref vek) = *self.byte_code.borrow() {
                 return Ok(vek.clone());
@@ -116,13 +116,13 @@ impl LispFunc {
     }
 
     pub fn create_continuation(
-        f: LispFunc,
+        f: CustomFunc,
         total_args: usize,
         supplied_args: usize,
         stack: &[LispValue],
     ) -> LispFunc {
         let arg_count = total_args - supplied_args;
-        let mut call_vec = vec![LispExpr::Value(LispValue::Function(f))];
+        let mut call_vec = vec![LispExpr::Value(LispValue::Function(LispFunc::Custom(f)))];
         call_vec.extend(stack[..supplied_args].iter().cloned().map(LispExpr::Value));
         call_vec.extend((0..total_args - supplied_args).map(LispExpr::Argument));
 

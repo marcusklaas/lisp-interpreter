@@ -300,10 +300,9 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                 unitary_int(&mut return_values, |i| Ok(LispValue::Boolean(i == 0)))?
             }
             Instr::EvalFunctionEager(ref funk, arg_count, is_tail_call) => {
-                // TODO: don't clone up front, only when needed
-                match funk.clone() {
+                match *funk {
                     LispFunc::BuiltIn(b) => instructions.push(builtin_instr(b, arg_count)?),
-                    LispFunc::Custom(mut f) => {
+                    LispFunc::Custom(ref f) => {
                         // Too many arguments or none at all.
                         if f.arg_count < arg_count || arg_count == 0 {
                             return Err(EvaluationError::ArgumentCountMismatch);
@@ -316,7 +315,7 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
 
                             let funk_arg_count = f.arg_count;
                             let continuation = LispFunc::create_continuation(
-                                LispFunc::Custom(f),
+                                f.clone(),
                                 funk_arg_count,
                                 arg_count,
                                 &return_values[current_stack..],
