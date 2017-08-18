@@ -291,9 +291,12 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                     if let LispValue::Function(funk) = return_values.pop().unwrap() {
                         match funk {
                             LispFunc::BuiltIn(b) => {
-                                //instructions.push(builtin_instr(b, arg_count)?);
-                                // disallow for now
-                                unreachable!()
+                                // The performance of this solution is basically horrendous,
+                                // but all the performant solutions are super messy.
+                                // This shouldn't occur too often, though.
+                                let instr_vec =
+                                    Rc::new(RefCell::new(vec![builtin_instr(b, arg_count)?]));
+                                update_stacks = Some((instr_vec, arg_count, true));
                             }
                             LispFunc::Custom(f) => {
                                 // Too many arguments or none at all.
@@ -322,9 +325,9 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                                     return_values
                                         .splice(stack_ref.stack_pointer..top_index, iter::empty());
 
-                                    update_stacks = Some((f, arg_count, false));
+                                    update_stacks = Some((f.compile(state)?, arg_count, false));
                                 } else {
-                                    update_stacks = Some((f, arg_count, true));
+                                    update_stacks = Some((f.compile(state)?, arg_count, true));
                                 }
                             }
                         }
@@ -370,8 +373,7 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
 
         // This solution is not very elegant, but it's necessary
         // to please the borrowchecker in a safe manner.
-        if let Some((f, arg_count, swap_stack)) = update_stacks {
-            let next_instr_vec = f.compile(state)?;
+        if let Some((next_instr_vec, arg_count, swap_stack)) = update_stacks {
             let instr_len = { next_instr_vec.borrow().len() };
             let mut next_stack_ref = StackRef {
                 instr_pointer: instr_len,
