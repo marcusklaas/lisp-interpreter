@@ -1,6 +1,7 @@
 use super::*;
 use std::collections::HashMap;
 use std::iter;
+use std::mem::swap;
 
 #[derive(Debug, Clone)]
 pub struct State {
@@ -38,13 +39,11 @@ impl State {
     }
 }
 
-// TODO: remove superfluous derives
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Instr {
     // Function and argument vector, Tail call
     EvalFunction(usize, bool),
     PopAndSet(String),
-    PopState,
     // Argument List, LispExpr
     CreateLambda(Vec<LispExpr>, LispExpr),
 
@@ -57,7 +56,7 @@ pub enum Instr {
     // Index in state
     PushVariable(usize),
 
-    // Built-in instructions
+    // Built-in instruction
     AddOne,
     SubOne,
     Cons,
@@ -202,149 +201,193 @@ fn builtin_instr(f: BuiltIn, arg_count: usize) -> Result<Instr, EvaluationError>
     })
 }
 
+#[derive(Clone, Debug)]
+struct StackRef {
+    instr_pointer: usize,
+    // TODO: this should probably be a UnsafeCell later. we set it only once
+    // and never update later
+    instr_vec: Rc<RefCell<Vec<Instr>>>,
+    stack_pointer: usize,
+}
+
 pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, EvaluationError> {
     let mut return_values: Vec<LispValue> = Vec::new();
-    let mut instructions = compile_expr(expr.clone(), state)?;
-    let mut stack_pointers = vec![];
-    let mut current_stack = 0;
+    let initial_instructions = compile_expr(expr.clone(), state)?;
+    let mut stax = vec![];
+    let mut stack_ref = StackRef {
+        instr_pointer: initial_instructions.len(),
+        instr_vec: Rc::new(RefCell::new(initial_instructions)),
+        stack_pointer: 0,
+    };
 
-    while let Some(ref instr) = instructions.pop() {
-        match *instr {
-            Instr::CreateLambda(ref arg_vec, ref body) => {
-                let args = arg_vec
-                    .into_iter()
-                    .map(|expr| match *expr {
-                        LispExpr::OpVar(ref name) => Ok(&name[..]),
-                        _ => Err(EvaluationError::MalformedDefinition),
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
+    'l: loop {
+        // Pop stack frame
+        while stack_ref.instr_pointer == 0 {
+            let val = return_values.pop().unwrap();
+            return_values.truncate(stack_ref.stack_pointer);
+            return_values.push(val);
 
-                // If there are any references to function arguments in
-                // the lambda body, we should resolve them before
-                // creating the lambda.
-                // This enables us to do closures.
-                let walked_body = body.replace_args(&return_values[current_stack..]);
-                let f = LispFunc::new_custom(&args, walked_body, state);
-
-                return_values.push(LispValue::Function(f));
+            if let Some(new_stack_ref) = stax.pop() {
+                stack_ref = new_stack_ref;
+            } else {
+                break 'l;
             }
-            Instr::PopInstructions(n) => {
-                let new_len = instructions.len() - n;
-                instructions.truncate(new_len);
-            }
-            Instr::CondPopInstructions(n) => {
-                if let LispValue::Boolean(b) = return_values.pop().unwrap() {
-                    if b {
-                        let new_len = instructions.len() - n;
-                        instructions.truncate(new_len);
-                    }
-                } else {
-                    return Err(EvaluationError::ArgumentTypeMismatch);
+        }
+
+        let mut update_stacks = None;
+
+        {
+            stack_ref.instr_pointer -= 1;
+            let stack_ref_instr = &stack_ref.instr_vec.borrow()[stack_ref.instr_pointer];
+
+            match *stack_ref_instr {
+                Instr::CreateLambda(ref arg_vec, ref body) => {
+                    let args = arg_vec
+                        .into_iter()
+                        .map(|expr| match *expr {
+                            LispExpr::OpVar(ref name) => Ok(&name[..]),
+                            _ => Err(EvaluationError::MalformedDefinition),
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+
+                    // If there are any references to function arguments in
+                    // the lambda body, we should resolve them before
+                    // creating the lambda.
+                    // This enables us to do closures.
+                    let walked_body = body.replace_args(&return_values[stack_ref.stack_pointer..]);
+                    let f = LispFunc::new_custom(&args, walked_body, state);
+
+                    return_values.push(LispValue::Function(f));
                 }
-            }
-            Instr::PushValue(ref v) => {
-                return_values.push(v.clone());
-            }
-            Instr::CloneValue(offset) => {
-                let index = current_stack + offset;
-                let value = return_values[index].clone();
-                return_values.push(value);
-            }
-            Instr::PushVariable(i) => {
-                return_values.push(state.get(i));
-            }
-            Instr::PopState => {
-                let val = return_values.pop().unwrap();
-
-                return_values.truncate(current_stack);
-                return_values.push(val);
-
-                current_stack = stack_pointers.pop().unwrap();
-            }
-            // Pops a function off the value stack and applies it
-            Instr::EvalFunction(arg_count, is_tail_call) => {
-                if let LispValue::Function(funk) = return_values.pop().unwrap() {
-                    match funk {
-                        LispFunc::BuiltIn(b) => instructions.push(builtin_instr(b, arg_count)?),
-                        LispFunc::Custom(f) => {
-                            // Too many arguments or none at all.
-                            if f.arg_count < arg_count || arg_count == 0 {
-                                return Err(EvaluationError::ArgumentCountMismatch);
+                Instr::PopInstructions(n) => {
+                    stack_ref.instr_pointer -= n;
+                }
+                Instr::CondPopInstructions(n) => {
+                    if let LispValue::Boolean(b) = return_values.pop().unwrap() {
+                        if b {
+                            stack_ref.instr_pointer -= n;
+                        }
+                    } else {
+                        return Err(EvaluationError::ArgumentTypeMismatch);
+                    }
+                }
+                Instr::PushValue(ref v) => {
+                    return_values.push(v.clone());
+                }
+                Instr::CloneValue(offset) => {
+                    let index = stack_ref.stack_pointer + offset;
+                    let value = return_values[index].clone();
+                    return_values.push(value);
+                }
+                Instr::PushVariable(i) => {
+                    return_values.push(state.get(i));
+                }
+                Instr::PopAndSet(ref var_name) => {
+                    state.set_variable(var_name, return_values.pop().unwrap());
+                    return_values.push(LispValue::List(Vec::new()));
+                }
+                // Pops a function off the value stack and applies it
+                Instr::EvalFunction(arg_count, is_tail_call) => {
+                    if let LispValue::Function(funk) = return_values.pop().unwrap() {
+                        match funk {
+                            LispFunc::BuiltIn(b) => {
+                                //instructions.push(builtin_instr(b, arg_count)?);
+                                // disallow for now
+                                unreachable!()
                             }
-                            // Not enough arguments, let's create a lambda that takes
-                            // the remainder.
-                            else if arg_count < f.arg_count {
-                                let temp_stack = return_values.len() - arg_count;
-                                let f_arg_count = f.arg_count;
-                                let continuation = LispFunc::create_continuation(
-                                    f,
-                                    f_arg_count,
-                                    arg_count,
-                                    &return_values[temp_stack..],
-                                );
+                            LispFunc::Custom(f) => {
+                                // Too many arguments or none at all.
+                                if f.arg_count < arg_count || arg_count == 0 {
+                                    return Err(EvaluationError::ArgumentCountMismatch);
+                                }
+                                // Not enough arguments, let's create a lambda that takes
+                                // the remainder.
+                                else if arg_count < f.arg_count {
+                                    let temp_stack = return_values.len() - arg_count;
+                                    let f_arg_count = f.arg_count;
+                                    let continuation = LispFunc::create_continuation(
+                                        f,
+                                        f_arg_count,
+                                        arg_count,
+                                        &return_values[temp_stack..],
+                                    );
 
-                                return_values.truncate(temp_stack);
-                                return_values.push(LispValue::Function(continuation));
-                            }
-                            // Exactly right number of arguments. Let's evaluate.
-                            else if is_tail_call {
-                                // Remove old arguments of the stack.
-                                let top_index = return_values.len() - arg_count;
-                                return_values.splice(current_stack..top_index, iter::empty());
-                                instructions.extend(f.compile(state)?);
-                            } else {
-                                stack_pointers.push(current_stack);
-                                current_stack = return_values.len() - arg_count;
-                                instructions.push(Instr::PopState);
-                                instructions.extend(f.compile(state)?);
+                                    return_values.truncate(temp_stack);
+                                    return_values.push(LispValue::Function(continuation));
+                                }
+                                // Exactly right number of arguments. Let's evaluate.
+                                else if is_tail_call {
+                                    // Remove old arguments of the stack.
+                                    let top_index = return_values.len() - arg_count;
+                                    return_values
+                                        .splice(stack_ref.stack_pointer..top_index, iter::empty());
+
+                                    update_stacks = Some((f, arg_count, false));
+                                } else {
+                                    update_stacks = Some((f, arg_count, true));
+                                }
                             }
                         }
+                    } else {
+                        return Err(EvaluationError::NonFunctionApplication);
                     }
+                }
+                Instr::List(arg_count) => {
+                    let len = return_values.len();
+                    let new_vec = return_values.split_off(len - arg_count);
+                    return_values.push(LispValue::List(new_vec));
+                }
+                Instr::Car => unitary_list(&mut return_values, |mut vec| match vec.pop() {
+                    Some(car) => Ok(car),
+                    None => Err(EvaluationError::EmptyList),
+                })?,
+                Instr::Cdr => unitary_list(&mut return_values, |mut vec| match vec.pop() {
+                    Some(_) => Ok(LispValue::List(vec)),
+                    None => Err(EvaluationError::EmptyList),
+                })?,
+                Instr::CheckNull => unitary_list(&mut return_values, |vec| {
+                    Ok(LispValue::Boolean(vec.is_empty()))
+                })?,
+                Instr::AddOne => {
+                    unitary_int(&mut return_values, |i| Ok(LispValue::Integer(i + 1)))?
+                }
+                Instr::SubOne => unitary_int(&mut return_values, |i| if i > 0 {
+                    Ok(LispValue::Integer(i - 1))
                 } else {
-                    return Err(EvaluationError::NonFunctionApplication);
+                    Err(EvaluationError::SubZero)
+                })?,
+                Instr::Cons => if let LispValue::List(mut new_vec) = return_values.pop().unwrap() {
+                    new_vec.push(return_values.pop().unwrap());
+                    return_values.push(LispValue::List(new_vec));
+                } else {
+                    return Err(EvaluationError::ArgumentTypeMismatch);
+                },
+                Instr::CheckZero => {
+                    unitary_int(&mut return_values, |i| Ok(LispValue::Boolean(i == 0)))?
                 }
             }
-            Instr::List(arg_count) => {
-                let len = return_values.len();
-                let new_vec = return_values.split_off(len - arg_count);
-                return_values.push(LispValue::List(new_vec));
-            }
-            Instr::Car => unitary_list(&mut return_values, |mut vec| match vec.pop() {
-                Some(car) => Ok(car),
-                None => Err(EvaluationError::EmptyList),
-            })?,
-            Instr::Cdr => unitary_list(&mut return_values, |mut vec| match vec.pop() {
-                Some(_) => Ok(LispValue::List(vec)),
-                None => Err(EvaluationError::EmptyList),
-            })?,
-            Instr::CheckNull => unitary_list(&mut return_values, |vec| {
-                Ok(LispValue::Boolean(vec.is_empty()))
-            })?,
-            Instr::AddOne => unitary_int(&mut return_values, |i| Ok(LispValue::Integer(i + 1)))?,
-            Instr::SubOne => unitary_int(&mut return_values, |i| if i > 0 {
-                Ok(LispValue::Integer(i - 1))
-            } else {
-                Err(EvaluationError::SubZero)
-            })?,
-            Instr::Cons => if let LispValue::List(mut new_vec) = return_values.pop().unwrap() {
-                new_vec.push(return_values.pop().unwrap());
-                return_values.push(LispValue::List(new_vec));
-            } else {
-                return Err(EvaluationError::ArgumentTypeMismatch);
-            },
-            Instr::CheckZero => {
-                unitary_int(&mut return_values, |i| Ok(LispValue::Boolean(i == 0)))?
-            }
-            Instr::PopAndSet(ref var_name) => {
-                state.set_variable(var_name, return_values.pop().unwrap());
-                return_values.push(LispValue::List(Vec::new()));
+        }
+
+        // This solution is not very elegant, but it's necessary
+        // to please the borrowchecker in a safe manner.
+        if let Some((f, arg_count, swap_stack)) = update_stacks {
+            let next_instr_vec = f.compile(state)?;
+            let instr_len = { next_instr_vec.borrow().len() };
+            let mut next_stack_ref = StackRef {
+                instr_pointer: instr_len,
+                instr_vec: next_instr_vec,
+                stack_pointer: return_values.len() - arg_count,
+            };
+            swap(&mut next_stack_ref, &mut stack_ref);
+
+            if swap_stack {
+                stax.push(next_stack_ref);
             }
         }
     }
 
-    assert!(stack_pointers.is_empty());
-    assert_eq!(current_stack, 0);
-    assert!(instructions.is_empty());
+    assert!(stax.is_empty());
+    assert_eq!(stack_ref.instr_pointer, 0);
     assert_eq!(return_values.len(), 1);
     Ok(return_values.pop().unwrap())
 }

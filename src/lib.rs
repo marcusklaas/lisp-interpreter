@@ -21,21 +21,24 @@ use evaluator::{compile_expr, Instr, State};
 pub struct CustomFunc {
     arg_count: usize,
     body: Rc<LispExpr>,
-    byte_code: Rc<RefCell<Option<Vec<Instr>>>>,
+    byte_code: Rc<RefCell<Vec<Instr>>>,
 }
 
 impl CustomFunc {
     // FIXME: do a pass reducing the number of clones and stuff
-    pub fn compile(&self, state: &State) -> Result<Vec<Instr>, EvaluationError> {
+    // TODO: there's a lot of unnecessary checks with refcells
+    // also, lot's of indirection. see if we can introduce a new type
+    // that makes this more efficient
+    pub fn compile(&self, state: &State) -> Result<Rc<RefCell<Vec<Instr>>>, EvaluationError> {
         {
-            if let Some(ref vek) = *self.byte_code.borrow() {
-                return Ok(vek.clone());
+            if !self.byte_code.borrow().is_empty() {
+                return Ok(self.byte_code.clone());
             }
         }
 
         let new_bytes = compile_expr((&*self.body).clone(), state)?;
-        *(self.byte_code.borrow_mut()) = Some(new_bytes.clone());
-        Ok(new_bytes)
+        *(self.byte_code.borrow_mut()) = new_bytes.clone();
+        Ok(self.byte_code.clone())
     }
 
     pub fn pretty_print(&self, indent: usize) -> String {
@@ -111,7 +114,7 @@ impl LispFunc {
         LispFunc::Custom(CustomFunc {
             arg_count: args.len(),
             body: Rc::new(body.transform(args, state, true)),
-            byte_code: Rc::new(RefCell::new(None)),
+            byte_code: Rc::new(RefCell::new(Vec::new())),
         })
     }
 
@@ -129,7 +132,7 @@ impl LispFunc {
         LispFunc::Custom(CustomFunc {
             arg_count: arg_count,
             body: Rc::new(LispExpr::Call(call_vec, true)),
-            byte_code: Rc::new(RefCell::new(None)),
+            byte_code: Rc::new(RefCell::new(Vec::new())),
         })
     }
 
