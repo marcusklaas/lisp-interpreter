@@ -43,7 +43,6 @@ impl State {
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Instr {
-    // Functions
     Recurse(usize),
     // Function and argument vector, Tail call
     EvalFunction(usize, bool),
@@ -389,7 +388,7 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> EvaluationResult<LispV
 
         // This solution is not very elegant, but it's necessary
         // to please the borrowchecker in a safe manner.
-        if let Some((next_instr_vec, arg_count, swap_stack)) = update_stacks {
+        if let Some((next_instr_vec, arg_count, push_stack)) = update_stacks {
             let instr_len = { next_instr_vec.borrow().len() };
             let mut next_stack_ref = StackRef {
                 instr_pointer: instr_len,
@@ -398,7 +397,7 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> EvaluationResult<LispV
             };
             swap(&mut next_stack_ref, &mut stack_ref);
 
-            if swap_stack {
+            if push_stack {
                 stax.push(next_stack_ref);
             }
         }
