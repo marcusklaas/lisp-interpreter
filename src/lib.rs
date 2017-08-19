@@ -285,7 +285,9 @@ impl LispExpr {
                 *is_self_call = n == name;
             }
 
-            vec.iter_mut().map(|e| LispExpr::flag_self_calls(e, name)).count();
+            for e in vec {
+                e.flag_self_calls(name);
+            }
         }
     }
 }
@@ -404,7 +406,36 @@ mod tests {
     }
 
     // TODO: add test to make sure that add is tail call optimized
-    // TODO: add test to check recursion calls
+
+    #[test]
+    fn add_bytecode() {
+        let add = check_lisp(vec![
+            "(define add (lambda (x y) (cond (zero? y) x (add (add1 x) (sub1 y)))))",
+            "(add 0 0)",
+            "(car (list add))",
+        ]).unwrap();
+
+        match add {
+            LispValue::Function(LispFunc::Custom(f)) => {
+                assert_eq!(
+                    vec![
+                        Instr::CloneArgument(0),
+                        Instr::Jump(1),
+                        Instr::Recurse(2),
+                        Instr::SubOne,
+                        Instr::CloneArgument(1),
+                        Instr::AddOne,
+                        Instr::CloneArgument(0),
+                        Instr::CondJump(6),
+                        Instr::CheckZero,
+                        Instr::CloneArgument(1),
+                    ],
+                    f.byte_code.borrow().clone()
+                );
+            }
+            _ => panic!("expected function!"),
+        }
+    }
 
     #[test]
     fn transform_expr() {

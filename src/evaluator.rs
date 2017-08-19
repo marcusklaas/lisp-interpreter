@@ -41,23 +41,30 @@ impl State {
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Instr {
+    /// Calls the function we're currently in with the given number of arguments
+    /// at the top of the stack
     Recurse(usize),
-    // Function and argument vector, Tail call
+    /// Evaluates the function at the top of the stack with given number of arguments.
+    /// The booleans indicates whether this is a tail call
     EvalFunction(usize, bool),
+    /// Pops a value from the stack and adds it to the state at the given name
     PopAndSet(String),
-    // Argument List, LispExpr
+    /// Creates a custom function with given (arguments, function body) and pushes
+    /// the result to the stack
     CreateLambda(Vec<LispExpr>, LispExpr),
 
-    // Removes top n instructions from stack
-    PopInstructions(usize),
-    // Pops value from stack - removes top n instructions if true
-    CondPopInstructions(usize),
+    /// Skips the given number of instructions
+    Jump(usize),
+    /// Pops boolean value from stack and conditionally jumps a number of instructions
+    CondJump(usize),
+    /// Pushes a value to the stack
     PushValue(LispValue),
-    CloneValue(usize),
-    // Index in state
+    /// Clones the n'th argument to the function and pushes it to the stack
+    CloneArgument(usize),
+    /// Clones value from state at given index and pushes it to the stack
     PushVariable(usize),
 
-    // Built-in instruction
+    // Built-in instructions
     AddOne,
     SubOne,
     Cons,
@@ -113,7 +120,7 @@ pub fn compile_expr(expr: LispExpr, state: &State) -> EvaluationResult<Vec<Instr
 
     match expr {
         LispExpr::Argument(offset) => {
-            vek.push(Instr::CloneValue(offset));
+            vek.push(Instr::CloneArgument(offset));
         }
         LispExpr::Value(v) => {
             vek.push(Instr::PushValue(v));
@@ -138,9 +145,9 @@ pub fn compile_expr(expr: LispExpr, state: &State) -> EvaluationResult<Vec<Instr
                         let false_expr_len = false_expr_vec.len();
 
                         vek.extend(true_expr_vec);
-                        vek.push(Instr::PopInstructions(true_expr_len));
+                        vek.push(Instr::Jump(true_expr_len));
                         vek.extend(false_expr_vec);
-                        vek.push(Instr::CondPopInstructions(false_expr_len + 1));
+                        vek.push(Instr::CondJump(false_expr_len + 1));
                         vek.extend(compile_expr(boolean, state)?);
                     })
                 }
@@ -228,7 +235,7 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> EvaluationResult<LispV
     };
 
     'l: loop {
-        // Pop stack frame
+        // Pop stack frame when there's no more instructions in this one
         while stack_ref.instr_pointer == 0 {
             let val = return_values.pop().unwrap();
             return_values.truncate(stack_ref.stack_pointer);
@@ -271,22 +278,20 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> EvaluationResult<LispV
 
                     return_values.push(LispValue::Function(f));
                 }
-                Instr::PopInstructions(n) => {
+                Instr::Jump(n) => {
                     stack_ref.instr_pointer -= n;
                 }
-                Instr::CondPopInstructions(n) => {
-                    if let LispValue::Boolean(b) = return_values.pop().unwrap() {
-                        if b {
-                            stack_ref.instr_pointer -= n;
-                        }
-                    } else {
-                        return Err(EvaluationError::ArgumentTypeMismatch);
+                Instr::CondJump(n) => if let LispValue::Boolean(b) = return_values.pop().unwrap() {
+                    if b {
+                        stack_ref.instr_pointer -= n;
                     }
-                }
+                } else {
+                    return Err(EvaluationError::ArgumentTypeMismatch);
+                },
                 Instr::PushValue(ref v) => {
                     return_values.push(v.clone());
                 }
-                Instr::CloneValue(offset) => {
+                Instr::CloneArgument(offset) => {
                     let index = stack_ref.stack_pointer + offset;
                     let value = return_values[index].clone();
                     return_values.push(value);
