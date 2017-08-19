@@ -1,5 +1,3 @@
-#![allow(unused_mut)] // FIXME: get rid of this
-
 use super::*;
 use std::collections::HashMap;
 use std::iter;
@@ -98,14 +96,14 @@ macro_rules! destructure {
 
     ( $y:ident, [ $( $i:ident ),* ], $body:expr ) => {
         {
-            if let ($( Some(mut $i), )* None) = {
+            if let ($( Some( $i), )* None) = {
                 let mut iter = $y.into_iter();
                 ( $( destructure!($i, iter.next()), )* iter.next() )
             } {
                 Ok($body)
             } else {
                 Err(EvaluationError::ArgumentCountMismatch)
-            }
+            }?
         }
     };
 }
@@ -144,7 +142,7 @@ pub fn compile_expr(expr: LispExpr, state: &State) -> EvaluationResult<Vec<Instr
                         vek.extend(false_expr_vec);
                         vek.push(Instr::CondPopInstructions(false_expr_len + 1));
                         vek.extend(compile_expr(boolean, state)?);
-                    })?
+                    })
                 }
                 LispExpr::Macro(LispMacro::Lambda) => destructure!(
                     expr_list,
@@ -154,18 +152,19 @@ pub fn compile_expr(expr: LispExpr, state: &State) -> EvaluationResult<Vec<Instr
                     } else {
                         return Err(EvaluationError::ArgumentTypeMismatch);
                     }
-                )?,
+                ),
                 LispExpr::Macro(LispMacro::Define) => destructure!(
                     expr_list,
                     [var_name, definition],
                     if let LispExpr::OpVar(name) = var_name {
-                        definition.flag_self_calls(&name);
+                        let mut def = definition;
+                        def.flag_self_calls(&name);
                         vek.push(Instr::PopAndSet(name.clone()));
-                        vek.extend(compile_expr(definition, state)?);
+                        vek.extend(compile_expr(def, state)?);
                     } else {
                         return Err(EvaluationError::ArgumentTypeMismatch);
                     }
-                )?,
+                ),
                 LispExpr::Value(LispValue::Function(LispFunc::BuiltIn(f))) => {
                     let instr = builtin_instr(f, expr_list.len())?;
                     vek.push(instr);
@@ -246,14 +245,13 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> EvaluationResult<LispV
 
         {
             stack_ref.instr_pointer -= 1;
-            let stack_ref_instr = &stack_ref.instr_vec.borrow()[stack_ref.instr_pointer];
+            let instr = &stack_ref.instr_vec.borrow()[stack_ref.instr_pointer];
 
-            match *stack_ref_instr {
+            match *instr {
                 Instr::Recurse(arg_count) => {
                     let top_index = return_values.len() - arg_count;
                     return_values.splice(stack_ref.stack_pointer..top_index, iter::empty());
                     stack_ref.instr_pointer = { stack_ref.instr_vec.borrow().len() };
-                    stack_ref.stack_pointer = return_values.len() - arg_count;
                 }
                 Instr::CreateLambda(ref arg_vec, ref body) => {
                     let args = arg_vec
@@ -297,7 +295,6 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> EvaluationResult<LispV
                     return_values.push(state.get(i));
                 }
                 Instr::PopAndSet(ref var_name) => {
-                    // We could walk the expression here?
                     state.set_variable(var_name, return_values.pop().unwrap());
                     return_values.push(LispValue::List(Vec::new()));
                 }

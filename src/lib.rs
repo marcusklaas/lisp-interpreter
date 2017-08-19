@@ -279,24 +279,13 @@ impl LispExpr {
         }
     }
 
-    // TODO: clean this up   
     pub fn flag_self_calls(&mut self, name: &str) {
-        match *self {
-            LispExpr::Call(ref mut vec, _tail_call, ref mut is_self_call) => {
-                if let &mut [ref mut head, ref mut tail..] = &mut vec[..] {
-                    if let LispExpr::OpVar(ref n) = *head {
-                        if name == n {
-                            *is_self_call = true;
-                        }
-                    } else {
-                        head.flag_self_calls(name);
-                    }
-                    for x in tail {
-                        x.flag_self_calls(name);
-                    }
-                }
+        if let LispExpr::Call(ref mut vec, _tail_call, ref mut is_self_call) = *self {
+            if let Some(&LispExpr::OpVar(ref n)) = vec.get(0) {
+                *is_self_call = n == name;
             }
-            _ => {}
+
+            vec.iter_mut().map(|e| LispExpr::flag_self_calls(e, name)).count();
         }
     }
 }
