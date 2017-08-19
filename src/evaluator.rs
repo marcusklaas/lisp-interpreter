@@ -37,6 +37,8 @@ impl State {
         self.index_map.get(var_name).map(|&i| StateIndex(i))
     }
 
+    // FIXME: this does not overwrite the old index in the store
+    // when it already was there
     pub fn set_variable(&mut self, var_name: &str, val: LispValue) {
         let index = self.store.len();
         self.index_map.insert(var_name.into(), index);

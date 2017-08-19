@@ -542,6 +542,50 @@ mod tests {
     }
 
     #[test]
+    fn variable_overwrite() {
+        check_lisp_ok(vec!["(define x 1)", "(define x 1000)", "(add1 x)"], "1001");
+    }
+
+    #[test]
+    fn check_int() {
+        check_lisp_ok(
+            vec![
+                "(define map (lambda (f xs) (cond (null? xs) (list) (cons (f (car xs)) (map f (cdr xs))))))",
+                "(map int? (list 1 2 #t (list 3 4) add1 0))",
+            ],
+            "(#t #t #f #f #f #t)",
+        );
+    }
+
+    #[test]
+    fn check_bool() {
+        check_lisp_ok(
+            vec![
+                "(list (bool? #t) (bool? #f) (bool? 5) (bool? (list #t)) (bool? bool?))",
+            ],
+            "(#t #t #f #f #f)",
+        );
+    }
+
+    #[test]
+    fn check_fun() {
+        check_lisp_ok(
+            vec![
+                "(list (fun? #t) (fun? fun?) (fun? 0) (fun? bool?) (fun? (lambda (x) #t)) (fun? #t))",
+            ],
+            "(#f #t #f #t #t #f)",
+        );
+    }
+
+    #[test]
+    fn check_list() {
+        check_lisp_ok(
+            vec!["(list (list? list) (list? list?) (list? (list)))"],
+            "(#f #f #t)",
+        );
+    }
+
+    #[test]
     fn is_null_empty_list() {
         check_lisp_ok(vec!["(null? (list))"], "#t");
     }
