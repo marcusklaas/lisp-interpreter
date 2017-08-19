@@ -19,6 +19,6 @@ name = "yalp"
 name = "yalp"
 
 [profile.release]
-debug = false
-lto = true
+debug = true
+lto = false
 

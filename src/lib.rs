@@ -1,6 +1,6 @@
 #![cfg_attr(feature = "clippy", feature(plugin))]
 #![cfg_attr(feature = "clippy", plugin(clippy))]
-#![feature(test, splice)]
+#![feature(test, splice, slice_patterns)]
 
 extern crate test;
 #[macro_use]
@@ -131,7 +131,7 @@ impl LispFunc {
 
         LispFunc::Custom(CustomFunc {
             arg_count: arg_count,
-            body: Rc::new(LispExpr::Call(call_vec, true)),
+            body: Rc::new(LispExpr::Call(call_vec, true, false)),
             byte_code: Rc::new(RefCell::new(Vec::new())),
         })
     }
@@ -181,9 +181,9 @@ pub enum LispExpr {
     OpVar(String),
     // Offset from stack pointer on the return_values stack.
     Argument(usize),
-    // Bool argument states whether the call is a
-    // tail call.
-    Call(Vec<LispExpr>, bool),
+    // First bool argument states whether the call is a
+    // tail call. Second states whether it is a self-call.
+    Call(Vec<LispExpr>, bool, bool),
 }
 
 impl LispExpr {
@@ -193,9 +193,12 @@ impl LispExpr {
             LispExpr::Value(ref v) => v.pretty_print(indent),
             LispExpr::OpVar(ref name) => name.clone(),
             LispExpr::Macro(ref mac) => format!("{:?}", mac),
-            LispExpr::Call(ref expr_vec, is_tail_call) => {
+            LispExpr::Call(ref expr_vec, is_tail_call, is_self_call) => {
                 let mut result = String::new();
 
+                if is_self_call {
+                    result.push('r');
+                }
                 if is_tail_call {
                     result.push('t');
                 }
@@ -228,22 +231,24 @@ impl LispExpr {
             // an expression twice without resolving the arguments first.
             LispExpr::Argument(_) => unreachable!(),
             LispExpr::OpVar(name) => {
-                // step 1: try to map it to an argument index
                 if let Some(index) = args.into_iter().position(|a| a == &name) {
+                    // step 1: try to map it to an argument index
                     LispExpr::Argument(index)
                 } else if let Some(v) = state.get_variable_value(&name) {
                     // step 2: if that fails, try to resolve it to a value in state
                     LispExpr::Value(v)
                 } else {
+                    // else: leave it
                     LispExpr::OpVar(name)
                 }
             }
-            LispExpr::Call(vec, _) => {
-                let do_tail_call = match (can_tail_call, vec.get(0)) {
-                    // Special case for `cond`. Even though it is a function,
-                    // its child expressions can still be tail calls.
-                    (true, Some(&LispExpr::Macro(LispMacro::Cond))) => vec.len() == 4,
-                    _ => false,
+            LispExpr::Call(vec, _tail_call, self_call) => {
+                // Special case for `cond`. Even though it is a function,
+                // its child expressions can still be tail calls.
+                let do_tail_call = if let Some(&LispExpr::Macro(LispMacro::Cond)) = vec.get(0) {
+                    can_tail_call && vec.len() == 4
+                } else {
+                    false
                 };
                 let tail_call_iter = (0..).map(|i| (i == 2 || i == 3) && do_tail_call);
 
@@ -253,6 +258,7 @@ impl LispExpr {
                         .map(|(e, can_tail)| e.transform(args, state, can_tail))
                         .collect(),
                     can_tail_call,
+                    self_call,
                 )
             }
         }
@@ -262,11 +268,33 @@ impl LispExpr {
     pub fn replace_args(&self, stack: &[LispValue]) -> LispExpr {
         match *self {
             LispExpr::Argument(index) => LispExpr::Value(stack[index].clone()),
-            LispExpr::Call(ref vec, is_tail_call) => LispExpr::Call(
+            LispExpr::Call(ref vec, is_tail_call, is_self_call) => LispExpr::Call(
                 vec.iter().map(|e| e.replace_args(stack)).collect(),
                 is_tail_call,
+                is_self_call,
             ),
             ref x => x.clone(),
+        }
+    }
+
+    // TODO: clean this up   
+    pub fn flag_self_calls(&mut self, name: &str) {
+        match *self {
+            LispExpr::Call(ref mut vec, _tail_call, ref mut is_self_call) => {
+                if let &mut [ref mut head, ref mut tail..] = &mut vec[..] {
+                    if let LispExpr::OpVar(ref n) = *head {
+                        if name == n {
+                            *is_self_call = true;
+                        }
+                    } else {
+                        head.flag_self_calls(name);
+                    }
+                    for x in tail {
+                        x.flag_self_calls(name);
+                    }
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -385,6 +413,7 @@ mod tests {
     }
 
     // TODO: add test to make sure that add is tail call optimized
+    // TODO: add test to check recursion calls
 
     #[test]
     fn transform_expr() {
@@ -398,8 +427,10 @@ mod tests {
                         LispExpr::OpVar("y".into()),
                     ],
                     false,
+                    false,
                 ),
             ],
+            false,
             false,
         );
 
@@ -415,9 +446,11 @@ mod tests {
                         LispExpr::Argument(1),
                     ],
                     false,
+                    false,
                 ),
             ],
             true,
+            false,
         );
 
         assert_eq!(expected_transform, transformed_expr);

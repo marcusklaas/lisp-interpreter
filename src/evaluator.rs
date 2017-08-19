@@ -1,3 +1,5 @@
+#![allow(unused_mut)] // FIXME: get rid of this
+
 use super::*;
 use std::collections::HashMap;
 use std::iter;
@@ -41,6 +43,8 @@ impl State {
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Instr {
+    // Functions
+    Recurse(usize),
     // Function and argument vector, Tail call
     EvalFunction(usize, bool),
     PopAndSet(String),
@@ -95,7 +99,7 @@ macro_rules! destructure {
 
     ( $y:ident, [ $( $i:ident ),* ], $body:expr ) => {
         {
-            if let ($( Some($i), )* None) = {
+            if let ($( Some(mut $i), )* None) = {
                 let mut iter = $y.into_iter();
                 ( $( destructure!($i, iter.next()), )* iter.next() )
             } {
@@ -125,7 +129,7 @@ pub fn compile_expr(expr: LispExpr, state: &State) -> Result<Vec<Instr>, Evaluat
         LispExpr::Macro(..) => {
             return Err(EvaluationError::UnexpectedOperator);
         }
-        LispExpr::Call(mut expr_list, is_tail_call) => {
+        LispExpr::Call(mut expr_list, is_tail_call, is_self_call) => {
             let head_expr = expr_list.remove(0);
 
             match head_expr {
@@ -146,7 +150,7 @@ pub fn compile_expr(expr: LispExpr, state: &State) -> Result<Vec<Instr>, Evaluat
                 LispExpr::Macro(LispMacro::Lambda) => destructure!(
                     expr_list,
                     [arg_list, body],
-                    if let LispExpr::Call(arg_vec, _is_tail_call) = arg_list {
+                    if let LispExpr::Call(arg_vec, _is_tail_call, _is_self_call) = arg_list {
                         vek.push(Instr::CreateLambda(arg_vec, body));
                     } else {
                         return Err(EvaluationError::ArgumentTypeMismatch);
@@ -156,7 +160,8 @@ pub fn compile_expr(expr: LispExpr, state: &State) -> Result<Vec<Instr>, Evaluat
                     expr_list,
                     [var_name, definition],
                     if let LispExpr::OpVar(name) = var_name {
-                        vek.push(Instr::PopAndSet(name));
+                        definition.flag_self_calls(&name);
+                        vek.push(Instr::PopAndSet(name.clone()));
                         vek.extend(compile_expr(definition, state)?);
                     } else {
                         return Err(EvaluationError::ArgumentTypeMismatch);
@@ -172,8 +177,12 @@ pub fn compile_expr(expr: LispExpr, state: &State) -> Result<Vec<Instr>, Evaluat
                     }
                 }
                 _ => {
-                    vek.push(Instr::EvalFunction(expr_list.len(), is_tail_call));
-                    vek.extend(compile_expr(head_expr, state)?);
+                    if is_tail_call && is_self_call {
+                        vek.push(Instr::Recurse(expr_list.len()));
+                    } else {
+                        vek.push(Instr::EvalFunction(expr_list.len(), is_tail_call));
+                        vek.extend(compile_expr(head_expr, state)?);
+                    }
 
                     for expr in expr_list.into_iter().rev() {
                         let instr_vec = compile_expr(expr, state)?;
@@ -241,6 +250,12 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
             let stack_ref_instr = &stack_ref.instr_vec.borrow()[stack_ref.instr_pointer];
 
             match *stack_ref_instr {
+                Instr::Recurse(arg_count) => {
+                    let top_index = return_values.len() - arg_count;
+                    return_values.splice(stack_ref.stack_pointer..top_index, iter::empty());
+                    stack_ref.instr_pointer = { stack_ref.instr_vec.borrow().len() };
+                    stack_ref.stack_pointer = return_values.len() - arg_count;
+                }
                 Instr::CreateLambda(ref arg_vec, ref body) => {
                     let args = arg_vec
                         .into_iter()
@@ -283,6 +298,7 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, Eval
                     return_values.push(state.get(i));
                 }
                 Instr::PopAndSet(ref var_name) => {
+                    // We could walk the expression here?
                     state.set_variable(var_name, return_values.pop().unwrap());
                     return_values.push(LispValue::List(Vec::new()));
                 }
