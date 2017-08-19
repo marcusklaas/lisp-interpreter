@@ -798,6 +798,17 @@ mod tests {
     }
 
     #[bench]
+    fn bench_mult(b: &mut super::test::Bencher) {
+        b.iter(|| {
+            check_lisp(vec![
+                "(define add (lambda (x y) (cond (zero? y) x (add (add1 x) (sub1 y)))))",
+                "(define mult (lambda (x y) (cond (zero? y) 0 (add (mult x (sub1 y)) x))))",
+                "(mult 10 100)",
+            ])
+        });
+    }
+
+    #[bench]
     fn bench_sort(b: &mut super::test::Bencher) {
         let mut state = State::new();
 
