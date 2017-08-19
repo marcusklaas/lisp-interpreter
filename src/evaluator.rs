@@ -71,10 +71,10 @@ pub enum Instr {
     CheckNull,
 }
 
-fn unitary_int<F: Fn(u64) -> Result<LispValue, EvaluationError>>(
+fn unitary_int<F: Fn(u64) -> EvaluationResult<LispValue>>(
     stack: &mut Vec<LispValue>,
     f: F,
-) -> Result<(), EvaluationError> {
+) -> EvaluationResult<()> {
     let reference = stack.last_mut().unwrap();
 
     if let &mut LispValue::Integer(i) = reference {
@@ -84,10 +84,10 @@ fn unitary_int<F: Fn(u64) -> Result<LispValue, EvaluationError>>(
     }
 }
 
-fn unitary_list<F: Fn(Vec<LispValue>) -> Result<LispValue, EvaluationError>>(
+fn unitary_list<F: Fn(Vec<LispValue>) -> EvaluationResult<LispValue>>(
     stack: &mut Vec<LispValue>,
     f: F,
-) -> Result<(), EvaluationError> {
+) -> EvaluationResult<()> {
     match stack.pop().unwrap() {
         LispValue::List(v) => Ok(stack.push(f(v)?)),
         _ => Err(EvaluationError::ArgumentTypeMismatch),
@@ -111,7 +111,7 @@ macro_rules! destructure {
     };
 }
 
-pub fn compile_expr(expr: LispExpr, state: &State) -> Result<Vec<Instr>, EvaluationError> {
+pub fn compile_expr(expr: LispExpr, state: &State) -> EvaluationResult<Vec<Instr>> {
     let mut vek = vec![];
 
     match expr {
@@ -196,7 +196,7 @@ pub fn compile_expr(expr: LispExpr, state: &State) -> Result<Vec<Instr>, Evaluat
     Ok(vek)
 }
 
-fn builtin_instr(f: BuiltIn, arg_count: usize) -> Result<Instr, EvaluationError> {
+fn builtin_instr(f: BuiltIn, arg_count: usize) -> EvaluationResult<Instr> {
     Ok(match (f, arg_count) {
         (BuiltIn::AddOne, 1) => Instr::AddOne,
         (BuiltIn::SubOne, 1) => Instr::SubOne,
@@ -219,7 +219,7 @@ struct StackRef {
     stack_pointer: usize,
 }
 
-pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> Result<LispValue, EvaluationError> {
+pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
     let mut return_values: Vec<LispValue> = Vec::new();
     let initial_instructions = compile_expr(expr.clone(), state)?;
     let mut stax = vec![];

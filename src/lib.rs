@@ -17,6 +17,8 @@ use std::rc::Rc;
 use std::cell::RefCell;
 use evaluator::{compile_expr, Instr, State};
 
+type EvaluationResult<T> = Result<T, EvaluationError>;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CustomFunc {
     arg_count: usize,
@@ -29,7 +31,7 @@ impl CustomFunc {
     // TODO: there's a lot of unnecessary checks with refcells
     // also, lot's of indirection. see if we can introduce a new type
     // that makes this more efficient
-    pub fn compile(&self, state: &State) -> Result<Rc<RefCell<Vec<Instr>>>, EvaluationError> {
+    pub fn compile(&self, state: &State) -> EvaluationResult<Rc<RefCell<Vec<Instr>>>> {
         {
             if !self.byte_code.borrow().is_empty() {
                 return Ok(self.byte_code.clone());
