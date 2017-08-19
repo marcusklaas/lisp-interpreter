@@ -32,7 +32,6 @@ impl State {
         }
     }
 
-    // FIXME: this store business may be totally unnecessary
     pub fn get_index(&self, var_name: &str) -> Option<StateIndex> {
         self.index_map.get(var_name).map(|&i| StateIndex(i))
     }

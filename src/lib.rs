@@ -3,10 +3,6 @@
 #![feature(test, splice, slice_patterns)]
 
 extern crate test;
-#[macro_use]
-extern crate custom_derive;
-#[macro_use]
-extern crate enum_derive;
 
 pub mod parse;
 pub mod evaluator;
@@ -58,18 +54,16 @@ impl CustomFunc {
     }
 }
 
-custom_derive! {
-    #[derive(PartialEq, Eq, Debug, Clone, Copy, IterVariants(BuiltInVariants))]
-    pub enum BuiltIn {
-        AddOne,
-        SubOne,
-        Cons,
-        Cdr,
-        Car,
-        List,
-        CheckZero,
-        CheckNull,
-    }
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
+pub enum BuiltIn {
+    AddOne,
+    SubOne,
+    Cons,
+    Cdr,
+    Car,
+    List,
+    CheckZero,
+    CheckNull,
 }
 
 impl BuiltIn {
@@ -404,8 +398,6 @@ mod tests {
     {
         assert_eq!(expected_err, check_lisp(commands).unwrap_err());
     }
-
-    // TODO: add test to make sure that add is tail call optimized
 
     #[test]
     fn add_bytecode() {

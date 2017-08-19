@@ -5,8 +5,6 @@ authors = ["Marcus Klaas <mail@marcusklaas.nl>"]
 
 [dependencies]
 rustyline = "*"
-custom_derive = "*"
-enum_derive = "*"
 clippy = {version = "*", optional = true}
 
 [features]
