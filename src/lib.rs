@@ -64,6 +64,15 @@ pub enum BuiltIn {
     List,
     CheckZero,
     CheckNull,
+    CheckType(ArgType),
+}
+
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
+pub enum ArgType {
+    Integer,
+    Boolean,
+    Function,
+    List,
 }
 
 impl BuiltIn {
@@ -77,6 +86,10 @@ impl BuiltIn {
             "list" => Some(BuiltIn::List),
             "zero?" => Some(BuiltIn::CheckZero),
             "null?" => Some(BuiltIn::CheckNull),
+            "int?" => Some(BuiltIn::CheckType(ArgType::Integer)),
+            "bool?" => Some(BuiltIn::CheckType(ArgType::Boolean)),
+            "list?" => Some(BuiltIn::CheckType(ArgType::List)),
+            "fun?" => Some(BuiltIn::CheckType(ArgType::Function)),
             _ => None,
         }
     }
@@ -84,6 +97,8 @@ impl BuiltIn {
 
 impl fmt::Display for BuiltIn {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        // TODO: is there a way to ensure this is consistent with the
+        // from_str function?
         let str = match *self {
             BuiltIn::AddOne => "add1",
             BuiltIn::SubOne => "sub1",
@@ -93,6 +108,10 @@ impl fmt::Display for BuiltIn {
             BuiltIn::List => "list",
             BuiltIn::CheckZero => "zero?",
             BuiltIn::CheckNull => "null?",
+            BuiltIn::CheckType(ArgType::Function) => "fun?",
+            BuiltIn::CheckType(ArgType::Boolean) => "bool?",
+            BuiltIn::CheckType(ArgType::Integer) => "int?",
+            BuiltIn::CheckType(ArgType::List) => "list?",
         };
 
         write!(f, "{}", str)
@@ -315,6 +334,15 @@ pub enum LispValue {
 }
 
 impl LispValue {
+    pub fn get_type(&self) -> ArgType {
+        match *self {
+            LispValue::Boolean(..) => ArgType::Boolean,
+            LispValue::Integer(..) => ArgType::Integer,
+            LispValue::Function(..) => ArgType::Function,
+            LispValue::List(..) => ArgType::List,
+        }
+    }
+
     pub fn pretty_print(&self, indent: usize) -> String {
         match *self {
             LispValue::Function(ref func) => format!("[{}]", func.pretty_print(indent)),

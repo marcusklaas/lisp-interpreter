@@ -1,3 +1,4 @@
+// FIXME: don't do glob imports
 use super::*;
 use std::collections::HashMap;
 use std::iter;
@@ -77,6 +78,7 @@ pub enum Instr {
     List(usize),
     CheckZero,
     CheckNull,
+    CheckType(ArgType),
 }
 
 fn unitary_int<F: Fn(u64) -> EvaluationResult<LispValue>>(
@@ -209,6 +211,7 @@ fn builtin_instr(f: BuiltIn, arg_count: usize) -> EvaluationResult<Instr> {
         (BuiltIn::Cons, 2) => Instr::Cons,
         (BuiltIn::Car, 1) => Instr::Car,
         (BuiltIn::Cdr, 1) => Instr::Cdr,
+        (BuiltIn::CheckType(t), 1) => Instr::CheckType(t),
         (_, _) => return Err(EvaluationError::ArgumentCountMismatch),
     })
 }
@@ -382,6 +385,10 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> EvaluationResult<LispV
                 },
                 Instr::CheckZero => {
                     unitary_int(&mut return_values, |i| Ok(LispValue::Boolean(i == 0)))?
+                }
+                Instr::CheckType(arg_type) => {
+                    let same_type = arg_type == return_values.pop().unwrap().get_type();
+                    return_values.push(LispValue::Boolean(same_type));
                 }
             }
         }
