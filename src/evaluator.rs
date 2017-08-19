@@ -1,12 +1,27 @@
 use super::*;
 use std::collections::HashMap;
 use std::iter;
+use std::ops::Index;
 use std::mem::swap;
+
+// TODO: ideally, this shouldn't be public - so
+// we can guarantee that no invalid indices can be
+// constructed
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct StateIndex(usize);
 
 #[derive(Debug, Clone)]
 pub struct State {
     index_map: HashMap<String, usize>,
     store: Vec<LispValue>,
+}
+
+impl Index<StateIndex> for State {
+    type Output = LispValue;
+
+    fn index(&self, index: StateIndex) -> &LispValue {
+        self.store.index(index.0)
+    }
 }
 
 impl State {
@@ -18,18 +33,8 @@ impl State {
     }
 
     // FIXME: this store business may be totally unnecessary
-    pub fn get_index(&self, var_name: &str) -> Option<usize> {
-        self.index_map.get(var_name).cloned()
-    }
-
-    pub fn get(&self, index: usize) -> LispValue {
-        self.store[index].clone()
-    }
-
-    pub fn get_variable_value(&self, var_name: &str) -> Option<LispValue> {
-        self.index_map
-            .get(var_name)
-            .map(|&index| self.store[index].clone())
+    pub fn get_index(&self, var_name: &str) -> Option<StateIndex> {
+        self.index_map.get(var_name).map(|&i| StateIndex(i))
     }
 
     pub fn set_variable(&mut self, var_name: &str, val: LispValue) {
@@ -62,7 +67,7 @@ pub enum Instr {
     /// Clones the n'th argument to the function and pushes it to the stack
     CloneArgument(usize),
     /// Clones value from state at given index and pushes it to the stack
-    PushVariable(usize),
+    PushVariable(StateIndex),
 
     // Built-in instructions
     AddOne,
@@ -172,17 +177,11 @@ pub fn compile_expr(expr: LispExpr, state: &State) -> EvaluationResult<Vec<Instr
                         return Err(EvaluationError::ArgumentTypeMismatch);
                     }
                 ),
-                LispExpr::Value(LispValue::Function(LispFunc::BuiltIn(f))) => {
-                    let instr = builtin_instr(f, expr_list.len())?;
-                    vek.push(instr);
-
-                    for expr in expr_list.into_iter().rev() {
-                        let instr_vec = compile_expr(expr, state)?;
-                        vek.extend(instr_vec);
-                    }
-                }
+                // Function evaluation
                 _ => {
-                    if is_tail_call && is_self_call {
+                    if let LispExpr::Value(LispValue::Function(LispFunc::BuiltIn(f))) = head_expr {
+                        vek.push(builtin_instr(f, expr_list.len())?);
+                    } else if is_tail_call && is_self_call {
                         vek.push(Instr::Recurse(expr_list.len()));
                     } else {
                         vek.push(Instr::EvalFunction(expr_list.len(), is_tail_call));
@@ -297,7 +296,7 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> EvaluationResult<LispV
                     return_values.push(value);
                 }
                 Instr::PushVariable(i) => {
-                    return_values.push(state.get(i));
+                    return_values.push(state[i].clone());
                 }
                 Instr::PopAndSet(ref var_name) => {
                     state.set_variable(var_name, return_values.pop().unwrap());

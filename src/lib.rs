@@ -236,9 +236,9 @@ impl LispExpr {
                 if let Some(index) = args.into_iter().position(|a| a == &name) {
                     // step 1: try to map it to an argument index
                     LispExpr::Argument(index)
-                } else if let Some(v) = state.get_variable_value(&name) {
+                } else if let Some(i) = state.get_index(&name) {
                     // step 2: if that fails, try to resolve it to a value in state
-                    LispExpr::Value(v)
+                    LispExpr::Value(state[i].clone())
                 } else {
                     // else: leave it
                     LispExpr::OpVar(name)
