@@ -407,7 +407,7 @@ mod tests {
 
         for cmd in commands {
             let expr = parse_lisp_string(cmd)?;
-            last_ret_val = Some(evaluator::eval(&expr, &mut state)?);
+            last_ret_val = Some(evaluator::eval(expr, &mut state)?);
         }
 
         Ok(last_ret_val.unwrap())
@@ -814,12 +814,12 @@ mod tests {
 
         for cmd in SORT_COMMANDS {
             let expr = parse_lisp_string(cmd).unwrap();
-            evaluator::eval(&expr, &mut state).unwrap();
+            evaluator::eval(expr, &mut state).unwrap();
         }
 
         b.iter(|| {
             let expr = parse_lisp_string("(sort (list 5 1 0 3 2 10 30 0 7 1))").unwrap();
-            evaluator::eval(&expr, &mut state).unwrap();
+            evaluator::eval(expr, &mut state).unwrap();
         });
     }
 }
