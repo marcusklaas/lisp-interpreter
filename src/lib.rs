@@ -34,7 +34,10 @@ impl CustomFunc {
             }
         }
 
-        let new_bytes = compile_expr((&*self.body).clone(), state)?;
+        let mut body = (&*self.body).clone();
+        let mut arg_vec: Vec<bool> = repeat(true).take(self.arg_count).collect();
+        body.set_moves(&mut arg_vec);
+        let new_bytes = compile_expr(body, state)?;
         *(self.byte_code.borrow_mut()) = new_bytes.clone();
         Ok(self.byte_code.clone())
     }
@@ -142,7 +145,7 @@ impl LispFunc {
         let arg_count = total_args - supplied_args;
         let mut call_vec = vec![LispExpr::Value(LispValue::Function(LispFunc::Custom(f)))];
         call_vec.extend(stack[..supplied_args].iter().cloned().map(LispExpr::Value));
-        call_vec.extend((0..total_args - supplied_args).map(LispExpr::Argument));
+        call_vec.extend((0..total_args - supplied_args).map(|o| LispExpr::Argument(o, true)));
 
         LispFunc::Custom(CustomFunc {
             arg_count: arg_count,
@@ -195,7 +198,8 @@ pub enum LispExpr {
     Value(LispValue),
     OpVar(String),
     // Offset from stack pointer on the return_values stack.
-    Argument(usize),
+    // Bool indicates whether the value can be moved from arguments stack.
+    Argument(usize, bool),
     // First bool argument states whether the call is a
     // tail call. Second states whether it is a self-call.
     Call(Vec<LispExpr>, bool, bool),
@@ -204,7 +208,7 @@ pub enum LispExpr {
 impl LispExpr {
     pub fn pretty_print(&self, indent: usize) -> String {
         match *self {
-            LispExpr::Argument(ref offset) => format!("${}", offset),
+            LispExpr::Argument(ref offset, is_move) => format!("{}${}", if is_move { "m" } else { "" }, offset),
             LispExpr::Value(ref v) => v.pretty_print(indent),
             LispExpr::OpVar(ref name) => name.clone(),
             LispExpr::Macro(ref mac) => format!("{:?}", mac),
@@ -235,6 +239,44 @@ impl LispExpr {
         }
     }
 
+    // Flags which uses of function arguments can be compiled down
+    // to moves.
+    fn set_moves(&mut self, arg_movable: &mut [bool]) {
+        match *self {
+            LispExpr::Argument(i, ref mut is_move) => {
+                if arg_movable[i] {
+                    *is_move = true;
+                    arg_movable[i] = false;
+                }
+            }
+            LispExpr::Call(ref mut vec, _tail_call, _self_call) => {
+                // Special case for `cond`. Each argument that hasn't been moved yet
+                // can be moved in both branches.
+                if let Some(&LispExpr::Macro(LispMacro::Cond)) = vec.get(0) {
+                    if vec.len() == 4 {
+                        // First check the branches, if an argument is moved in either of them,
+                        // it cannot be used for the condition check.
+                        let mut arg_movable_branch: Vec<bool> = arg_movable.iter().cloned().collect();
+                        vec[2].set_moves(&mut arg_movable_branch[..]);
+                        vec[3].set_moves(arg_movable);
+
+                        // For the condition check and above holds: an argument can only
+                        // be moved when it was not moved in either branch.
+                        for (a, b) in arg_movable.iter_mut().zip(arg_movable_branch.iter()) {
+                            *a = *a && *b;
+                        }
+                        vec[1].set_moves(arg_movable);
+                    }
+                } else {
+                    for e in vec.iter_mut().rev() {
+                        e.set_moves(arg_movable)
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     // Prepares a LispExpr for use in a lambda body, by mapping
     // variables to references argument indices and checking what
     // calls are tail calls.
@@ -244,11 +286,11 @@ impl LispExpr {
             x @ LispExpr::Macro(_) => x,
             // This should not be possible. We shouldn't transform
             // an expression twice without resolving the arguments first.
-            LispExpr::Argument(_) => unreachable!(),
+            LispExpr::Argument(..) => unreachable!(),
             LispExpr::OpVar(name) => {
                 if let Some(index) = args.into_iter().position(|a| a == &name) {
                     // step 1: try to map it to an argument index
-                    LispExpr::Argument(index)
+                    LispExpr::Argument(index, false)
                 } else if let Some(i) = state.get_index(&name) {
                     // step 2: if that fails, try to resolve it to a value in state
                     LispExpr::Value(state[i].clone())
@@ -282,7 +324,7 @@ impl LispExpr {
     // Resolves references to function arguments. Used when creating closures.
     pub fn replace_args(&self, stack: &[LispValue]) -> LispExpr {
         match *self {
-            LispExpr::Argument(index) => LispExpr::Value(stack[index].clone()),
+            LispExpr::Argument(index, _is_move) => LispExpr::Value(stack[index].clone()),
             LispExpr::Call(ref vec, is_tail_call, is_self_call) => LispExpr::Call(
                 vec.iter().map(|e| e.replace_args(stack)).collect(),
                 is_tail_call,
@@ -439,13 +481,13 @@ mod tests {
             LispValue::Function(LispFunc::Custom(f)) => {
                 assert_eq!(
                     vec![
-                        Instr::CloneArgument(0),
+                        Instr::MoveArgument(0),
                         Instr::Jump(1),
                         Instr::Recurse(2),
                         Instr::SubOne,
-                        Instr::CloneArgument(1),
+                        Instr::MoveArgument(1),
                         Instr::AddOne,
-                        Instr::CloneArgument(0),
+                        Instr::MoveArgument(0),
                         Instr::CondJump(6),
                         Instr::CheckZero,
                         Instr::CloneArgument(1),
@@ -480,12 +522,12 @@ mod tests {
 
         let expected_transform = LispExpr::Call(
             vec![
-                LispExpr::Argument(0),
+                LispExpr::Argument(0, false),
                 LispExpr::Value(LispValue::Boolean(true)),
                 LispExpr::Call(
                     vec![
                         LispExpr::Value(LispValue::Integer(5)),
-                        LispExpr::Argument(1),
+                        LispExpr::Argument(1, false),
                     ],
                     false,
                     false,

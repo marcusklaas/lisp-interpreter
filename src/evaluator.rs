@@ -71,6 +71,9 @@ pub enum Instr {
     PushValue(LispValue),
     /// Clones the n'th argument to the function and pushes it to the stack
     CloneArgument(usize),
+    /// Moves the n'th argument to the function to the top of the stack and replaces
+    /// it with a dummy value.
+    MoveArgument(usize),
     /// Clones value from state at given index and pushes it to the stack
     PushVariable(StateIndex),
 
@@ -130,7 +133,10 @@ pub fn compile_expr(expr: LispExpr, state: &State) -> EvaluationResult<Vec<Instr
     let mut vek = vec![];
 
     match expr {
-        LispExpr::Argument(offset) => {
+        LispExpr::Argument(offset, true) => {
+            vek.push(Instr::MoveArgument(offset));
+        }
+        LispExpr::Argument(offset, false) => {
             vek.push(Instr::CloneArgument(offset));
         }
         LispExpr::Value(v) => {
@@ -306,6 +312,11 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                 let index = stack_ref.stack_pointer + offset;
                 let value = return_values[index].clone();
                 return_values.push(value);
+            }
+            Instr::MoveArgument(offset) => {
+                let len = return_values.len();
+                return_values.push(LispValue::Boolean(false));
+                return_values.swap(stack_ref.stack_pointer + offset, len);
             }
             Instr::PushVariable(i) => {
                 return_values.push(state[i].clone());
