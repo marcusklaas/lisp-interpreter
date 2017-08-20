@@ -5,7 +5,8 @@ use std::iter;
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::ops::Index;
-use std::mem::swap;
+use std::mem::{swap, transmute};
+use std::ops::Deref;
 
 // TODO: ideally, this shouldn't be public - so
 // we can guarantee that no invalid indices can be
@@ -223,21 +224,31 @@ fn builtin_instr(f: BuiltIn, arg_count: usize) -> EvaluationResult<Instr> {
 #[derive(Clone, Debug)]
 struct StackRef {
     instr_pointer: usize,
-    // TODO: this should probably be a UnsafeCell later. we set it only once
-    // and never update later
     instr_vec: Rc<RefCell<Vec<Instr>>>,
     stack_pointer: usize,
+    // This reference isn't really static - it refers to vector inside of
+    // instr_vec. There's just no way to express this in Rust (I think!)
+    instr_slice: &'static [Instr],
+}
+
+impl StackRef {
+    fn new(next_instr_vec: Rc<RefCell<Vec<Instr>>>, stack_pointer: usize) -> StackRef {
+        let instr_len = { next_instr_vec.borrow().len() };
+        let reference = unsafe { transmute(&next_instr_vec.borrow().deref()[..]) };
+
+        StackRef {
+            instr_slice: reference,
+            instr_pointer: instr_len,
+            instr_vec: next_instr_vec,
+            stack_pointer: stack_pointer,
+        }
+    }
 }
 
 pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
     let mut return_values: Vec<LispValue> = Vec::new();
-    let initial_instructions = compile_expr(expr.clone(), state)?;
     let mut stax = vec![];
-    let mut stack_ref = StackRef {
-        instr_pointer: initial_instructions.len(),
-        instr_vec: Rc::new(RefCell::new(initial_instructions)),
-        stack_pointer: 0,
-    };
+    let mut stack_ref = StackRef::new(Rc::new(RefCell::new(compile_expr(expr.clone(), state)?)), 0);
 
     'l: loop {
         // Pop stack frame when there's no more instructions in this one
@@ -257,13 +268,12 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> EvaluationResult<LispV
 
         {
             stack_ref.instr_pointer -= 1;
-            let instr = &stack_ref.instr_vec.borrow()[stack_ref.instr_pointer];
 
-            match *instr {
+            match stack_ref.instr_slice[stack_ref.instr_pointer] {
                 Instr::Recurse(arg_count) => {
                     let top_index = return_values.len() - arg_count;
                     return_values.splice(stack_ref.stack_pointer..top_index, iter::empty());
-                    stack_ref.instr_pointer = { stack_ref.instr_vec.borrow().len() };
+                    stack_ref.instr_pointer = { stack_ref.instr_slice.len() };
                 }
                 Instr::CreateLambda(ref arg_vec, ref body) => {
                     let args = arg_vec
@@ -400,12 +410,7 @@ pub fn eval<'e>(expr: &'e LispExpr, state: &mut State) -> EvaluationResult<LispV
         // This solution is not very elegant, but it's necessary
         // to please the borrowchecker in a safe manner.
         if let Some((next_instr_vec, arg_count, push_stack)) = update_stacks {
-            let instr_len = { next_instr_vec.borrow().len() };
-            let mut next_stack_ref = StackRef {
-                instr_pointer: instr_len,
-                instr_vec: next_instr_vec,
-                stack_pointer: return_values.len() - arg_count,
-            };
+            let mut next_stack_ref = StackRef::new(next_instr_vec, return_values.len() - arg_count);
             swap(&mut next_stack_ref, &mut stack_ref);
 
             if push_stack {
