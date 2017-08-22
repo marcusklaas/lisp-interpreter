@@ -576,6 +576,20 @@ mod tests {
     }
 
     #[test]
+    fn map2_zip() {
+        check_lisp_ok(
+            vec![
+                "(define add (lambda (x y) (cond (zero? y) x (add (add1 x) (sub1 y)))))",
+                "(define or (lambda (x y) (cond x #t y)))",
+                "(define zip (lambda (x y) (cond (or (null? x) (null? y)) (list) (cons (list (car x) (car y)) (zip (cdr x) (cdr y))))))",
+                "(define map2 (lambda (f l) (cond (null? l) (list) (cons (f (car (cdr (car l))) (car (car l))) (map2 f (cdr l))))))",
+                "(map2 add (zip (list 1 2 3 4 5) (list 0 20 40 60)))",
+            ],
+            "(2 23 44 65)",
+        );
+    }
+
+    #[test]
     fn function_def() {
         check_lisp_ok(
             vec!["(define add2 (lambda (x) (add1 (add1 x))))", "(add2 5)"],

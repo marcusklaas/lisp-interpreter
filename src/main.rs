@@ -19,6 +19,9 @@ const PRELUDE: &'static [&'static str] = &[
     "(define append (lambda (l1 l2) (cond (null? l2) l1 (cons (car l2) (append l1 (cdr l2))))))",
     "(define range (lambda (start end) (cond (> end start) (cons end (range start (sub1 end))) (list start))))",
     "(define sort (lambda (l) (cond (null? l) l (append (cons (car l) (sort (filter (lambda (x) (not (> x (car l)))) (cdr l)))) (sort (filter (lambda (x) (> x (car l))) l))))))",
+    "(define or (lambda (x y) (cond x #t y)))",
+    "(define zip (lambda (x y) (cond (or (null? x) (null? y)) (list) (cons (list (car x) (car y)) (zip (cdr x) (cdr y))))))",
+    "(define map2 (lambda (f l) (cond (null? l) (list) (cons (f (car (cdr (car l))) (car (car l))) (map2 f (cdr l))))))",
 ];
 
 fn exec_command(s: &str, state: &mut State) {
