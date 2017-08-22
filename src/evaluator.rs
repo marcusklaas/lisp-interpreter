@@ -1,5 +1,6 @@
 use super::{ArgType, BuiltIn, EvaluationError, EvaluationResult, LispExpr, LispFunc, LispMacro,
             LispValue};
+use super::specialization;
 use std::collections::HashMap;
 use std::iter;
 use std::rc::Rc;
@@ -338,6 +339,17 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                             update_stacks = Some((instr_vec, arg_count, true));
                         }
                         LispFunc::Custom(f) => {
+                            // FIXME: DEBUGGING ONLY
+                            let index = return_values.len() - arg_count;
+                            let arg_types = return_values[index..]
+                                .iter()
+                                .map(LispValue::get_type)
+                                .collect::<Vec<_>>();
+                            specialization::make_specialization_graph(
+                                LispExpr::Value(LispValue::Function(LispFunc::Custom(f.clone()))),
+                                &arg_types,
+                            );
+
                             // Too many arguments or none at all.
                             if f.arg_count < arg_count || arg_count == 0 {
                                 return Err(EvaluationError::ArgumentCountMismatch);
