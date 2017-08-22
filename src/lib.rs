@@ -13,6 +13,7 @@ use std::fmt;
 use std::iter::repeat;
 use std::rc::Rc;
 use std::cell::RefCell;
+use std::hash::{Hash, Hasher};
 use evaluator::{compile_expr, Instr, State};
 
 type EvaluationResult<T> = Result<T, EvaluationError>;
@@ -22,6 +23,17 @@ pub struct CustomFunc {
     arg_count: usize,
     body: Rc<LispExpr>,
     byte_code: Rc<RefCell<Vec<Instr>>>,
+}
+
+impl Hash for CustomFunc {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // TODO: check that this is right - are we not leaking memory?
+        let ptr = Rc::into_raw(self.body.clone());
+        state.write_usize(ptr as usize);
+        unsafe {
+            let rc = Rc::from_raw(ptr);
+        }
+    }
 }
 
 impl CustomFunc {
@@ -58,7 +70,7 @@ impl CustomFunc {
     }
 }
 
-#[derive(PartialEq, Eq, Debug, Clone, Copy)]
+#[derive(PartialEq, Eq, Debug, Clone, Copy, Hash)]
 pub enum BuiltIn {
     AddOne,
     SubOne,
@@ -71,7 +83,7 @@ pub enum BuiltIn {
     CheckType(ArgType),
 }
 
-#[derive(PartialEq, Eq, Debug, Clone, Copy)]
+#[derive(PartialEq, Eq, Debug, Clone, Copy, Hash)]
 pub enum ArgType {
     Integer,
     Boolean,
@@ -122,7 +134,7 @@ impl fmt::Display for BuiltIn {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LispFunc {
     BuiltIn(BuiltIn),
     Custom(CustomFunc),
