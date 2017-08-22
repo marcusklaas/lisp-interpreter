@@ -345,10 +345,7 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                                 .iter()
                                 .map(LispValue::get_type)
                                 .collect::<Vec<_>>();
-                            specialization::make_specialization_graph(
-                                LispExpr::Value(LispValue::Function(LispFunc::Custom(f.clone()))),
-                                &arg_types,
-                            );
+                            specialization::make_specialization_graph(f.clone(), &arg_types);
 
                             // Too many arguments or none at all.
                             if f.arg_count < arg_count || arg_count == 0 {
