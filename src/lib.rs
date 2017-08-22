@@ -3,9 +3,11 @@
 #![feature(test, splice, slice_patterns)]
 
 extern crate test;
+extern crate petgraph;
 
 pub mod parse;
 pub mod evaluator;
+mod specialization;
 
 use std::fmt;
 use std::iter::repeat;
@@ -37,8 +39,7 @@ impl CustomFunc {
         let mut body = (&*self.body).clone();
         let mut arg_vec: Vec<bool> = repeat(true).take(self.arg_count).collect();
         body.set_moves(&mut arg_vec);
-        let new_bytes = compile_expr(body, state)?;
-        *(self.byte_code.borrow_mut()) = new_bytes.clone();
+        *(self.byte_code.borrow_mut()) = compile_expr(body, state)?;
         Ok(self.byte_code.clone())
     }
 
@@ -172,7 +173,7 @@ impl fmt::Display for LispFunc {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum LispMacro {
     Define,
     Cond,
