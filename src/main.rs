@@ -22,6 +22,7 @@ const PRELUDE: &'static [&'static str] = &[
     "(define or (lambda (x y) (cond x #t y)))",
     "(define zip (lambda (x y) (cond (or (null? x) (null? y)) (list) (cons (list (car x) (car y)) (zip (cdr x) (cdr y))))))",
     "(define map2 (lambda (f l) (cond (null? l) (list) (cons (f (car (cdr (car l))) (car (car l))) (map2 f (cdr l))))))",
+    "(define reverse (lambda (l) (cond (null? l) (list) (append (list (car l)) (reverse (cdr l))))))",
 ];
 
 fn exec_command(s: &str, state: &mut State) {
