@@ -13,6 +13,7 @@ pub enum SpecializationError {
     UnsupportedCurrying,
     UnsupportedBuiltIn,
     UnsupportedMacro,
+    UnsupportedFunctionArgument,
     BadCondition,
     BadRecursion,
     UndefinedVariable,
@@ -45,7 +46,6 @@ struct Context<'e> {
     graph: Graph<GeneralizedExpr<'e>, NoLabel, Undirected>,
     reference_map: HashMap<LispFunc, FunctionReference>,
     list_index: NodeIndex,
-    wrapped_index: NodeIndex,
     bool_index: NodeIndex,
     int_index: NodeIndex,
     state: &'e State,
@@ -63,7 +63,6 @@ impl<'e> Context<'e>{
         Context {
             graph: graph,
             reference_map: map,
-            wrapped_index: wrapped_idx,
             list_index: list_idx,
             bool_index: bool_idx,
             int_index: int_idx,
@@ -218,12 +217,10 @@ fn eval_custom_func<'m, 'e: 'm>(
                 context.graph.add_edge(self_node, new_ref.out, NoLabel);
                 Ok(self_node)
             } else {
-                // Unfit built-in
                 Err(SpecializationError::UnsupportedBuiltIn)
             }
         }
         _ => {
-            // Non function application
             Err(SpecializationError::NonFunctionApplication)
         }
     }
@@ -253,7 +250,6 @@ fn expand_graph<'m, 'e: 'm>(
                 match *head {
                     // Recursion
                     _ if is_self_call => {
-                        // Not the right number of arguments for recursion
                         if arg_indices.len() != main_ref.ins.len() {
                             return Err(SpecializationError::BadRecursion);
                         }
@@ -299,16 +295,12 @@ fn expand_graph<'m, 'e: 'm>(
                     } else {
                         return Err(SpecializationError::UndefinedVariable);
                     },
-                    ref x => {
-                        // TODO: implement this. I think it is necessary for expressions
-                        // like ((add 1) 10)
-                        return Ok(context.graph.add_node(GeneralizedExpr::DumbNode(
-                            format!("non-value function head: {}", x),
-                        )))
+                    _ => {
+                        // TODO: implement this at some point
+                        return Err(SpecializationError::UnsupportedFunctionArgument);
                     }
                 }
             } else {
-                // Empty call
                 return Err(SpecializationError::EmptyCall);
             }
 
@@ -327,7 +319,7 @@ fn expand_graph<'m, 'e: 'm>(
                 }
                 LispValue::Function(ref _f) => {
                     // TODO: implement function stuff?
-                    return Ok(context.graph.add_node(GeneralizedExpr::DumbNode("funkkk".to_owned())));
+                    return Err(SpecializationError::UnsupportedFunctionArgument);
                 }
                 LispValue::List(..) => {
                     context.graph.add_edge(self_node, context.list_index, NoLabel);
@@ -339,8 +331,6 @@ fn expand_graph<'m, 'e: 'm>(
         // All references should be resolved at this point, right?
         // No, not per se.
         LispExpr::OpVar(..) => unreachable!(),
-        // We shouldn't find a top level macro - this is almost surely a faulty
-        // expression.
         LispExpr::Macro(_) => return Err(SpecializationError::UnexpectedMacro),
     }
 }
