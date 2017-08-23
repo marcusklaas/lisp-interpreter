@@ -31,7 +31,7 @@ impl Hash for CustomFunc {
         let ptr = Rc::into_raw(self.body.clone());
         state.write_usize(ptr as usize);
         unsafe {
-            let rc = Rc::from_raw(ptr);
+            Rc::from_raw(ptr);
         }
     }
 }
