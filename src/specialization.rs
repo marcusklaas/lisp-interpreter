@@ -1,16 +1,10 @@
 use super::{ArgType, BuiltIn, CustomFunc, LispExpr, LispFunc, LispMacro, LispValue};
+use super::evaluator::State;
 use std::collections::HashMap;
-use std::ops::Index;
 use petgraph::Undirected;
 use petgraph::graph::{Graph, NodeIndex};
 use petgraph::dot::{Config, Dot};
 use std::fmt;
-
-#[derive(Debug)]
-pub enum SpecializedType {
-    Boolean,
-    Integer,
-}
 
 #[derive(Clone)]
 struct FunctionReference {
@@ -21,7 +15,6 @@ struct FunctionReference {
 #[derive(Debug)]
 pub enum GeneralizedExpr {
     Expr(LispExpr),
-    FixedType(SpecializedType),
     DumbNode(String),
 }
 
@@ -29,7 +22,6 @@ impl fmt::Display for GeneralizedExpr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             GeneralizedExpr::Expr(ref e) => e.fmt(f),
-            GeneralizedExpr::FixedType(ref e) => write!(f, "{:?}", e),
             GeneralizedExpr::DumbNode(ref s) => write!(f, "{}", s),
         }
     }
@@ -47,55 +39,38 @@ fn create_ref_map(
     bool_index: NodeIndex,
     int_index: NodeIndex,
 ) -> HashMap<LispFunc, FunctionReference> {
-    let mut map = HashMap::new();
 
-    // TODO: find a way to make sure we do not forget a built-in?
-    map.insert(LispFunc::BuiltIn(BuiltIn::AddOne), {
-        let in_node = g.add_node(GeneralizedExpr::DumbNode("add1 in".to_owned()));
-        g.add_edge(in_node, int_index, NoLabel);
-        let out_node = g.add_node(GeneralizedExpr::DumbNode("add1 out".to_owned()));
-        g.add_edge(out_node, int_index, NoLabel);
-        FunctionReference {
-            ins: vec![in_node],
-            out: out_node,
-        }
-    });
-
-    map.insert(LispFunc::BuiltIn(BuiltIn::SubOne), {
-        let in_node = g.add_node(GeneralizedExpr::DumbNode("sub1 in".to_owned()));
-        g.add_edge(in_node, int_index, NoLabel);
-        let out_node = g.add_node(GeneralizedExpr::DumbNode("sub1 out".to_owned()));
-        g.add_edge(out_node, int_index, NoLabel);
-        FunctionReference {
-            ins: vec![in_node],
-            out: out_node,
-        }
-    });
-
-    map.insert(LispFunc::BuiltIn(BuiltIn::CheckZero), {
-        let in_node = g.add_node(GeneralizedExpr::DumbNode("zero? in".to_owned()));
-        g.add_edge(in_node, int_index, NoLabel);
-        let out_node = g.add_node(GeneralizedExpr::DumbNode("zero? out".to_owned()));
-        g.add_edge(out_node, bool_index, NoLabel);
-        FunctionReference {
-            ins: vec![in_node],
-            out: out_node,
-        }
-    });
-
-    map
+    [
+        (BuiltIn::AddOne, int_index, int_index),
+        (BuiltIn::SubOne, int_index, int_index),
+        (BuiltIn::CheckZero, int_index, bool_index),
+    ].into_iter()
+        .map(|&(builtin, in_index, out_index)| {
+            let in_node = g.add_node(GeneralizedExpr::DumbNode(format!("{} in", builtin)));
+            let out_node = g.add_node(GeneralizedExpr::DumbNode(format!("{} out", builtin)));
+            g.add_edge(in_node, in_index, NoLabel);
+            g.add_edge(out_node, out_index, NoLabel);
+            (
+                LispFunc::BuiltIn(builtin),
+                FunctionReference {
+                    ins: vec![in_node],
+                    out: out_node,
+                },
+            )
+        })
+        .collect()
 }
-
 
 // TODO: we should actually take the arguments instead of their types
 //       for when a function is passed in.
 pub fn make_specialization_graph(
     f: CustomFunc,
     argument_types: &[ArgType],
+    state: &State,
 ) -> Result<Graph<GeneralizedExpr, NoLabel, Undirected>, ()> {
     let mut g = Graph::<GeneralizedExpr, NoLabel, Undirected>::new_undirected();
-    let bool_idx = g.add_node(GeneralizedExpr::FixedType(SpecializedType::Boolean));
-    let int_idx = g.add_node(GeneralizedExpr::FixedType(SpecializedType::Integer));
+    let bool_idx = g.add_node(GeneralizedExpr::DumbNode("Boolean".to_owned()));
+    let int_idx = g.add_node(GeneralizedExpr::DumbNode("Integer".to_owned()));
     let mut map = create_ref_map(&mut g, bool_idx, int_idx);
 
     let main_ref = add_custom_func(f.clone(), &mut g, &mut map);
@@ -111,11 +86,15 @@ pub fn make_specialization_graph(
         }
     }
 
-    // TODO: we should add edges between in nodes and types here?
-    // and then pass the list of node indices of the ins around
-
-    let res = expand_graph(&(*f.body), &main_ref, &mut g, &mut map, bool_idx, int_idx)?;
-
+    let res = expand_graph(
+        &(*f.body),
+        &main_ref,
+        &mut g,
+        &mut map,
+        bool_idx,
+        int_idx,
+        state,
+    )?;
     g.add_edge(res, main_ref.out, NoLabel);
 
     println!("{}", Dot::with_config(&g, &[Config::EdgeNoLabel]));
@@ -145,6 +124,61 @@ fn add_custom_func(
     reference
 }
 
+fn eval_custom_func(
+    val: &LispValue,
+    self_node: NodeIndex,
+    arg_indices: Vec<NodeIndex>,
+    tail_len: usize,
+    g: &mut Graph<GeneralizedExpr, NoLabel, Undirected>,
+    reference_map: &mut HashMap<LispFunc, FunctionReference>,
+    bool_index: NodeIndex,
+    int_index: NodeIndex,
+    state: &State,
+) -> Result<NodeIndex, ()> {
+    match *val {
+        LispValue::Function(ref f) => {
+            if let Some(reference) = reference_map.get(f) {
+                // Let's not do crazy currying stuff yet and only
+                // accept the exact number of arguments required.
+                if reference.ins.len() != tail_len {
+                    return Err(());
+                } else {
+                    for (&idx, &function_in) in arg_indices.iter().zip(reference.ins.iter()) {
+                        g.add_edge(idx, function_in, NoLabel);
+                    }
+
+                    g.add_edge(self_node, reference.out, NoLabel);
+                    return Ok(self_node);
+                }
+            }
+
+            if let LispFunc::Custom(ref custom_func) = *f {
+                let new_ref = add_custom_func(custom_func.clone(), g, reference_map);
+
+                expand_graph(
+                    &(*custom_func.body),
+                    &new_ref,
+                    g,
+                    reference_map,
+                    bool_index,
+                    int_index,
+                    state,
+                )?;
+
+                g.add_edge(self_node, new_ref.out, NoLabel);
+                Ok(self_node)
+            } else {
+                // Unfit built-in
+                Err(())
+            }
+        }
+        _ => {
+            // Non function application
+            Err(())
+        }
+    }
+}
+
 fn expand_graph(
     expr: &LispExpr,
     main_ref: &FunctionReference,
@@ -152,6 +186,7 @@ fn expand_graph(
     reference_map: &mut HashMap<LispFunc, FunctionReference>,
     bool_index: NodeIndex,
     int_index: NodeIndex,
+    state: &State,
 ) -> Result<NodeIndex, ()> {
     match *expr {
         LispExpr::Argument(index, _c) => Ok(main_ref.ins[index]),
@@ -159,23 +194,27 @@ fn expand_graph(
             let self_node = g.add_node(GeneralizedExpr::Expr(expr.clone()));
 
             if let [ref head, ref tail..] = arg_vec[..] {
-                match *head {
-                    _ if is_self_call => {
-                        let arg_indices = tail.iter()
-                            .map(|arg_expr| {
-                                expand_graph(
-                                    arg_expr,
-                                    main_ref,
-                                    g,
-                                    reference_map,
-                                    bool_index,
-                                    int_index,
-                                )
-                            })
-                            .collect::<Result<Vec<_>, _>>()?;
+                let arg_indices = tail.iter()
+                    .map(|arg_expr| {
+                        expand_graph(
+                            arg_expr,
+                            main_ref,
+                            g,
+                            reference_map,
+                            bool_index,
+                            int_index,
+                            state,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
 
-                        // Recursion
-                        assert_eq!(arg_indices.len(), main_ref.ins.len(), "bad recursion");
+                match *head {
+                    // Recursion
+                    _ if is_self_call => {
+                        // Not the right number of arguments for recursion
+                        if arg_indices.len() != main_ref.ins.len() {
+                            return Err(());
+                        }
 
                         for (&top_node, &arg_node) in main_ref.ins.iter().zip(arg_indices.iter()) {
                             g.add_edge(top_node, arg_node, NoLabel);
@@ -186,96 +225,55 @@ fn expand_graph(
                     LispExpr::Macro(m) => {
                         match m {
                             LispMacro::Cond => {
-                                // Do some special thing for conditionals:
-                                // connect the test to the bool node
-                                // connect the two branches together
                                 if tail.len() != 3 {
                                     return Err(());
                                 }
 
-                                let test_idx = expand_graph(
-                                    tail.index(0),
-                                    main_ref,
-                                    g,
-                                    reference_map,
-                                    bool_index,
-                                    int_index,
-                                )?;
-                                g.add_edge(test_idx, bool_index, NoLabel);
-
-                                let branch_a_idx = expand_graph(
-                                    tail.index(1),
-                                    main_ref,
-                                    g,
-                                    reference_map,
-                                    bool_index,
-                                    int_index,
-                                )?;
-                                let branch_b_idx = expand_graph(
-                                    tail.index(2),
-                                    main_ref,
-                                    g,
-                                    reference_map,
-                                    bool_index,
-                                    int_index,
-                                )?;
-
-                                g.add_edge(self_node, branch_b_idx, NoLabel);
-                                g.add_edge(self_node, branch_a_idx, NoLabel);
+                                g.add_edge(arg_indices[0], bool_index, NoLabel);
+                                g.add_edge(self_node, arg_indices[1], NoLabel);
+                                g.add_edge(self_node, arg_indices[2], NoLabel);
                             }
                             // Do not bother with definitions/ lambdas (for now)
                             LispMacro::Define | LispMacro::Lambda => return Err(()),
                         }
                     }
-                    LispExpr::Value(ref val) => match *val {
-                        LispValue::Function(ref f) => {
-                            let arg_indices = tail.iter()
-                                .map(|arg_expr| {
-                                    expand_graph(
-                                        arg_expr,
-                                        main_ref,
-                                        g,
-                                        reference_map,
-                                        bool_index,
-                                        int_index,
-                                    )
-                                })
-                                .collect::<Result<Vec<_>, _>>()?;
-                            if let Some(reference) = reference_map.get(f) {
-                                if reference.ins.len() != tail.len() {
-                                    return Err(());
-                                }
-
-                                for (&idx, &function_in) in
-                                    arg_indices.iter().zip(reference.ins.iter())
-                                {
-                                    g.add_edge(idx, function_in, NoLabel);
-                                }
-
-                                println!("{}", expr.clone());
-
-                                g.add_edge(self_node, reference.out, NoLabel);
-                            } else {
-                                return Ok(g.add_node(
-                                    GeneralizedExpr::DumbNode("unknown function".to_owned()),
-                                ));
-                            }
-                        }
-                        _ => {
-                            return Ok(g.add_node(
-                                GeneralizedExpr::DumbNode("non-function value".to_owned()),
-                            ))
-                        }
+                    LispExpr::Value(ref val) => {
+                        return eval_custom_func(
+                            val,
+                            self_node,
+                            arg_indices,
+                            tail.len(),
+                            g,
+                            reference_map,
+                            bool_index,
+                            int_index,
+                            state,
+                        );
+                    }
+                    LispExpr::OpVar(ref n) => if let Some(state_index) = state.get_index(n) {
+                        return eval_custom_func(
+                            &state[state_index],
+                            self_node,
+                            arg_indices,
+                            tail.len(),
+                            g,
+                            reference_map,
+                            bool_index,
+                            int_index,
+                            state,
+                        );
+                    } else {
+                        return Err(());
                     },
-
-                    _ => {
+                    ref x => {
                         return Ok(g.add_node(GeneralizedExpr::DumbNode(
-                            "non-value function head?".to_owned(),
+                            format!("non-value function head: {}", x),
                         )))
                     }
                 }
             } else {
-                panic!("empty call shouldnt be possible!");
+                // Empty call
+                return Err(());
             }
 
             Ok(self_node)
@@ -290,8 +288,8 @@ fn expand_graph(
                 LispValue::Integer(..) => {
                     g.add_edge(self_node, int_index, NoLabel);
                 }
-                LispValue::Function(..) => {
-                    // TODO: implement function stuff
+                LispValue::Function(ref _f) => {
+                    // TODO: implement function stuff?
                     return Ok(g.add_node(GeneralizedExpr::DumbNode("funkkk".to_owned())));
                 }
                 LispValue::List(..) => return Err(()),
@@ -300,6 +298,7 @@ fn expand_graph(
             Ok(self_node)
         }
         // All references should be resolved at this point, right?
+        // No, not per se.
         LispExpr::OpVar(..) => unreachable!(),
         // We shouldn't find a top level macro - this is almost surely a faulty
         // expression.
