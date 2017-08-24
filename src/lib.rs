@@ -2,8 +2,8 @@
 #![cfg_attr(feature = "clippy", plugin(clippy))]
 #![feature(test, splice, slice_patterns)]
 
-extern crate test;
 extern crate petgraph;
+extern crate test;
 
 pub mod parse;
 pub mod evaluator;
@@ -158,7 +158,9 @@ impl LispFunc {
         let arg_count = total_args - supplied_args;
         let mut call_vec = vec![LispExpr::Value(LispValue::Function(LispFunc::Custom(f)))];
         call_vec.extend(stack[..supplied_args].iter().cloned().map(LispExpr::Value));
-        call_vec.extend((0..total_args - supplied_args).map(|o| LispExpr::Argument(o, true)));
+        call_vec.extend(
+            (0..total_args - supplied_args).map(|o| LispExpr::Argument(o, true)),
+        );
 
         LispFunc::Custom(CustomFunc {
             arg_count: arg_count,
@@ -221,7 +223,9 @@ pub enum LispExpr {
 impl LispExpr {
     pub fn pretty_print(&self, indent: usize) -> String {
         match *self {
-            LispExpr::Argument(ref offset, is_move) => format!("{}${}", if is_move { "m" } else { "" }, offset),
+            LispExpr::Argument(ref offset, is_move) => {
+                format!("{}${}", if is_move { "m" } else { "" }, offset)
+            }
             LispExpr::Value(ref v) => v.pretty_print(indent),
             LispExpr::OpVar(ref name) => name.clone(),
             LispExpr::Macro(ref mac) => format!("{:?}", mac),
@@ -256,12 +260,10 @@ impl LispExpr {
     // to moves.
     fn set_moves(&mut self, arg_movable: &mut [bool]) {
         match *self {
-            LispExpr::Argument(i, ref mut is_move) => {
-                if arg_movable[i] {
-                    *is_move = true;
-                    arg_movable[i] = false;
-                }
-            }
+            LispExpr::Argument(i, ref mut is_move) => if arg_movable[i] {
+                *is_move = true;
+                arg_movable[i] = false;
+            },
             LispExpr::Call(ref mut vec, _tail_call, _self_call) => {
                 // Special case for `cond`. Each argument that hasn't been moved yet
                 // can be moved in both branches.
@@ -269,7 +271,8 @@ impl LispExpr {
                     if vec.len() == 4 {
                         // First check the branches, if an argument is moved in either of them,
                         // it cannot be used for the condition check.
-                        let mut arg_movable_branch: Vec<bool> = arg_movable.iter().cloned().collect();
+                        let mut arg_movable_branch: Vec<bool> =
+                            arg_movable.iter().cloned().collect();
                         vec[2].set_moves(&mut arg_movable_branch[..]);
                         vec[3].set_moves(arg_movable);
 
