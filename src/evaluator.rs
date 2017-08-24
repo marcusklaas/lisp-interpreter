@@ -230,8 +230,7 @@ fn builtin_instr(f: BuiltIn, arg_count: usize) -> EvaluationResult<Instr> {
 
 struct StackRef {
     instr_pointer: usize,
-    #[allow(dead_code)]
-    instr_vec: Rc<RefCell<Vec<Instr>>>,
+    #[allow(dead_code)] instr_vec: Rc<RefCell<Vec<Instr>>>,
     stack_pointer: usize,
     // This reference isn't really static - it refers to vector inside of
     // instr_vec. There's just no way to express this in Rust (I think!)
@@ -347,9 +346,10 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                                 .map(LispValue::get_type)
                                 .collect::<Vec<_>>();
                             if let Err(e) =
-                                specialization::make_specialization_graph(&f, &arg_types, state) {
-                                    println!("{:?}", e);
-                                }
+                                specialization::make_specialization_graph(&f, &arg_types, state)
+                            {
+                                println!("{:?}", e);
+                            }
 
                             // Too many arguments or none at all.
                             if f.arg_count < arg_count || arg_count == 0 {

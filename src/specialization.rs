@@ -51,7 +51,7 @@ struct Context<'e> {
     state: &'e State,
 }
 
-impl<'e> Context<'e>{
+impl<'e> Context<'e> {
     fn new_from_state(state: &'e State) -> Self {
         let mut graph = Graph::<GeneralizedExpr, NoLabel, Undirected>::new_undirected();
         let bool_idx = graph.add_node(GeneralizedExpr::DumbNode("Boolean".to_owned()));
@@ -86,7 +86,6 @@ fn create_ref_map(
     list_index: NodeIndex,
     wrapped_index: NodeIndex,
 ) -> HashMap<LispFunc, FunctionReference> {
-
     [
         (BuiltIn::AddOne, vec![int_index], int_index),
         (BuiltIn::SubOne, vec![int_index], int_index),
@@ -100,11 +99,15 @@ fn create_ref_map(
         .map(|&(builtin, ref in_indices, out_index)| {
             let out_node = graph.add_node(GeneralizedExpr::DumbNode(format!("{} out", builtin)));
 
-            let in_node_vec = in_indices.into_iter().map(|&in_index| {
-                let in_node = graph.add_node(GeneralizedExpr::DumbNode(format!("{} in", builtin)));
-                graph.add_edge(in_node, in_index, NoLabel);
-                in_node
-            }).collect();
+            let in_node_vec = in_indices
+                .into_iter()
+                .map(|&in_index| {
+                    let in_node =
+                        graph.add_node(GeneralizedExpr::DumbNode(format!("{} in", builtin)));
+                    graph.add_edge(in_node, in_index, NoLabel);
+                    in_node
+                })
+                .collect();
 
             graph.add_edge(out_node, out_index, NoLabel);
             (
@@ -131,40 +134,44 @@ pub fn make_specialization_graph<'e>(
     for (&arg_node, &arg_type) in main_ref.ins.iter().zip(argument_types.iter()) {
         match arg_type {
             ArgType::Boolean => {
-                context.graph.add_edge(arg_node, context.bool_index, NoLabel);
+                context
+                    .graph
+                    .add_edge(arg_node, context.bool_index, NoLabel);
             }
             ArgType::Integer => {
                 context.graph.add_edge(arg_node, context.int_index, NoLabel);
             }
             ArgType::List => {
-                context.graph.add_edge(arg_node, context.list_index, NoLabel);
+                context
+                    .graph
+                    .add_edge(arg_node, context.list_index, NoLabel);
             }
             _ => {}
         }
     }
 
-    let res = expand_graph(
-        &(*f.body),
-        &main_ref,
-        &mut context
-    )?;
+    let res = expand_graph(&(*f.body), &main_ref, &mut context)?;
     context.graph.add_edge(res, main_ref.out, NoLabel);
 
-    println!("{}", Dot::with_config(&context.graph, &[Config::EdgeNoLabel]));
+    println!(
+        "{}",
+        Dot::with_config(&context.graph, &[Config::EdgeNoLabel])
+    );
 
     Ok(context.graph)
 }
 
-fn add_custom_func<'m>(
-    f: & CustomFunc,
-    context: &'m mut Context,
-) -> &'m FunctionReference {
+fn add_custom_func<'m>(f: &CustomFunc, context: &'m mut Context) -> &'m FunctionReference {
     let arg_nodes = (0..f.arg_count)
         .map(|i| {
-            context.graph.add_node(GeneralizedExpr::DumbNode(format!("in {}", i)))
+            context
+                .graph
+                .add_node(GeneralizedExpr::DumbNode(format!("in {}", i)))
         })
         .collect::<Vec<_>>();
-    let out_node = context.graph.add_node(GeneralizedExpr::DumbNode("out".to_owned()));
+    let out_node = context
+        .graph
+        .add_node(GeneralizedExpr::DumbNode("out".to_owned()));
 
     let reference = FunctionReference {
         ins: arg_nodes,
@@ -172,9 +179,7 @@ fn add_custom_func<'m>(
     };
 
     // TODO: don't clone, somehow
-    if let Entry::Vacant(vacant) =
-        context.reference_map.entry(LispFunc::Custom(f.clone()))
-    {
+    if let Entry::Vacant(vacant) = context.reference_map.entry(LispFunc::Custom(f.clone())) {
         vacant.insert(reference)
     } else {
         unreachable!()
@@ -208,11 +213,7 @@ fn eval_custom_func<'m, 'e: 'm>(
             if let LispFunc::Custom(ref custom_func) = *f {
                 let new_ref = add_custom_func(custom_func, context).clone();
 
-                expand_graph(
-                    &(*custom_func.body),
-                    &new_ref,
-                    context,
-                )?;
+                expand_graph(&(*custom_func.body), &new_ref, context)?;
 
                 context.graph.add_edge(self_node, new_ref.out, NoLabel);
                 Ok(self_node)
@@ -220,9 +221,7 @@ fn eval_custom_func<'m, 'e: 'm>(
                 Err(SpecializationError::UnsupportedBuiltIn)
             }
         }
-        _ => {
-            Err(SpecializationError::NonFunctionApplication)
-        }
+        _ => Err(SpecializationError::NonFunctionApplication),
     }
 }
 
@@ -238,13 +237,7 @@ fn expand_graph<'m, 'e: 'm>(
 
             if let [ref head, ref tail..] = arg_vec[..] {
                 let arg_indices = tail.iter()
-                    .map(|arg_expr| {
-                        expand_graph(
-                            arg_expr,
-                            main_ref,
-                            context,
-                        )
-                    })
+                    .map(|arg_expr| expand_graph(arg_expr, main_ref, context))
                     .collect::<Result<Vec<_>, _>>()?;
 
                 match *head {
@@ -267,24 +260,23 @@ fn expand_graph<'m, 'e: 'm>(
                                     return Err(SpecializationError::BadCondition);
                                 }
 
-                                context.graph.add_edge(arg_indices[0], context.bool_index, NoLabel);
+                                context
+                                    .graph
+                                    .add_edge(arg_indices[0], context.bool_index, NoLabel);
                                 context.graph.add_edge(self_node, arg_indices[1], NoLabel);
                                 context.graph.add_edge(self_node, arg_indices[2], NoLabel);
                             }
                             // Do not bother with definitions/ lambdas (for now)
-                            LispMacro::Define | LispMacro::Lambda => return Err(SpecializationError::UnsupportedMacro),
+                            LispMacro::Define | LispMacro::Lambda => {
+                                return Err(SpecializationError::UnsupportedMacro)
+                            }
                         }
                     }
                     LispExpr::Value(ref val) => {
-                        return eval_custom_func(
-                            val,
-                            self_node,
-                            arg_indices,
-                            tail.len(),
-                            context,
-                        );
+                        return eval_custom_func(val, self_node, arg_indices, tail.len(), context);
                     }
-                    LispExpr::OpVar(ref n) => if let Some(state_index) = context.state.get_index(n) {
+                    LispExpr::OpVar(ref n) => if let Some(state_index) = context.state.get_index(n)
+                    {
                         return eval_custom_func(
                             &context.state[state_index],
                             self_node,
@@ -297,6 +289,7 @@ fn expand_graph<'m, 'e: 'm>(
                     },
                     _ => {
                         // TODO: implement this at some point
+                        // this is used in ((lambda (f x) (f x)) add1 10)
                         return Err(SpecializationError::UnsupportedFunctionArgument);
                     }
                 }
@@ -312,17 +305,24 @@ fn expand_graph<'m, 'e: 'm>(
 
             match *val {
                 LispValue::Boolean(..) => {
-                    context.graph.add_edge(self_node, context.bool_index, NoLabel);
+                    context
+                        .graph
+                        .add_edge(self_node, context.bool_index, NoLabel);
                 }
                 LispValue::Integer(..) => {
-                    context.graph.add_edge(self_node, context.int_index, NoLabel);
+                    context
+                        .graph
+                        .add_edge(self_node, context.int_index, NoLabel);
                 }
                 LispValue::Function(ref _f) => {
                     // TODO: implement function stuff?
+                    // this is used in ((lambda (f x) (f x)) add1 10)
                     return Err(SpecializationError::UnsupportedFunctionArgument);
                 }
                 LispValue::List(..) => {
-                    context.graph.add_edge(self_node, context.list_index, NoLabel);
+                    context
+                        .graph
+                        .add_edge(self_node, context.list_index, NoLabel);
                 }
             }
 

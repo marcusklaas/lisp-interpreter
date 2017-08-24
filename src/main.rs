@@ -1,8 +1,8 @@
 #![cfg_attr(feature = "clippy", feature(plugin))]
 #![cfg_attr(feature = "clippy", plugin(clippy))]
 
-extern crate yalp;
 extern crate rustyline;
+extern crate yalp;
 
 use yalp::evaluator::State;
 use yalp::parse::parse_lisp_string;
