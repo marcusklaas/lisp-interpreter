@@ -5,10 +5,12 @@ use std::collections::HashMap;
 use petgraph::Undirected;
 use petgraph::graph::{Graph, NodeIndex};
 use petgraph::dot::{Config, Dot};
+use petgraph::algo::condensation;
+use petgraph::visit::IntoNodeReferences;
 use std::fmt;
 
 #[derive(Debug)]
-pub enum SpecializationError {
+enum SpecializationError {
     NonFunctionApplication,
     UnsupportedCurrying,
     UnsupportedBuiltIn,
@@ -27,17 +29,20 @@ struct FunctionReference {
     out: NodeIndex,
 }
 
+// TODO: rename this to node or something
 #[derive(Debug)]
-pub enum GeneralizedExpr<'e> {
+enum GeneralizedExpr<'e> {
     Expr(&'e LispExpr),
-    DumbNode(String),
+    LabelNode(String),
+    Ty(ArgType),
 }
 
 impl<'e> fmt::Display for GeneralizedExpr<'e> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             GeneralizedExpr::Expr(ref e) => e.fmt(f),
-            GeneralizedExpr::DumbNode(ref s) => write!(f, "{}", s),
+            GeneralizedExpr::LabelNode(ref s) => write!(f, "{}", s),
+            GeneralizedExpr::Ty(ty) => write!(f, "{:?}", ty),
         }
     }
 }
@@ -54,10 +59,12 @@ struct Context<'e> {
 impl<'e> Context<'e> {
     fn new_from_state(state: &'e State) -> Self {
         let mut graph = Graph::<GeneralizedExpr, NoLabel, Undirected>::new_undirected();
-        let bool_idx = graph.add_node(GeneralizedExpr::DumbNode("Boolean".to_owned()));
-        let int_idx = graph.add_node(GeneralizedExpr::DumbNode("Integer".to_owned()));
-        let list_idx = graph.add_node(GeneralizedExpr::DumbNode("List".to_owned()));
-        let wrapped_idx = graph.add_node(GeneralizedExpr::DumbNode("Wrapped".to_owned()));
+        let bool_idx = graph.add_node(GeneralizedExpr::Ty(ArgType::Boolean));
+        let int_idx = graph.add_node(GeneralizedExpr::Ty(ArgType::Integer));
+        let list_idx = graph.add_node(GeneralizedExpr::Ty(ArgType::List));
+        // Not really a function, but there is no Wrapped type. And the actual
+        // type doesn't really matter for now.
+        let wrapped_idx = graph.add_node(GeneralizedExpr::Ty(ArgType::Function));
         let map = create_ref_map(&mut graph, bool_idx, int_idx, list_idx, wrapped_idx);
 
         Context {
@@ -71,7 +78,7 @@ impl<'e> Context<'e> {
     }
 }
 
-pub struct NoLabel;
+struct NoLabel;
 
 impl fmt::Display for NoLabel {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -79,51 +86,28 @@ impl fmt::Display for NoLabel {
     }
 }
 
-fn create_ref_map(
-    graph: &mut Graph<GeneralizedExpr, NoLabel, Undirected>,
-    bool_index: NodeIndex,
-    int_index: NodeIndex,
-    list_index: NodeIndex,
-    wrapped_index: NodeIndex,
-) -> HashMap<LispFunc, FunctionReference> {
-    [
-        (BuiltIn::AddOne, vec![int_index], int_index),
-        (BuiltIn::SubOne, vec![int_index], int_index),
-        (BuiltIn::CheckZero, vec![int_index], bool_index),
-        (BuiltIn::Cdr, vec![list_index], list_index),
-        (BuiltIn::Car, vec![list_index], wrapped_index),
-        (BuiltIn::CheckNull, vec![list_index], bool_index),
-        (BuiltIn::Cons, vec![wrapped_index, list_index], list_index),
-        (BuiltIn::List, vec![], list_index),
-    ].into_iter()
-        .map(|&(builtin, ref in_indices, out_index)| {
-            let out_node = graph.add_node(GeneralizedExpr::DumbNode(format!("{} out", builtin)));
+pub fn can_specialize<'e>(f: &'e CustomFunc, argument_types: &[ArgType], state: &'e State) -> bool {
+    if let Ok(graph) = make_specialization_graph(f, argument_types, state) {
+        let condensation = condensation(graph, true);
 
-            let in_node_vec = in_indices
+        condensation.node_references().all(|(_index, component)| {
+            component
                 .into_iter()
-                .map(|&in_index| {
-                    let in_node =
-                        graph.add_node(GeneralizedExpr::DumbNode(format!("{} in", builtin)));
-                    graph.add_edge(in_node, in_index, NoLabel);
-                    in_node
+                .filter(|node| if let GeneralizedExpr::Ty(_) = **node {
+                    true
+                } else {
+                    false
                 })
-                .collect();
-
-            graph.add_edge(out_node, out_index, NoLabel);
-            (
-                LispFunc::BuiltIn(builtin),
-                FunctionReference {
-                    ins: in_node_vec,
-                    out: out_node,
-                },
-            )
+                .count() == 1
         })
-        .collect()
+    } else {
+        false
+    }
 }
 
 // TODO: we should actually take the arguments instead of their types
 //       for when a function is passed in.
-pub fn make_specialization_graph<'e>(
+fn make_specialization_graph<'e>(
     f: &'e CustomFunc,
     argument_types: &[ArgType],
     state: &'e State,
@@ -161,17 +145,59 @@ pub fn make_specialization_graph<'e>(
     Ok(context.graph)
 }
 
+fn create_ref_map(
+    graph: &mut Graph<GeneralizedExpr, NoLabel, Undirected>,
+    bool_index: NodeIndex,
+    int_index: NodeIndex,
+    list_index: NodeIndex,
+    wrapped_index: NodeIndex,
+) -> HashMap<LispFunc, FunctionReference> {
+    [
+        (BuiltIn::AddOne, vec![int_index], int_index),
+        (BuiltIn::SubOne, vec![int_index], int_index),
+        (BuiltIn::CheckZero, vec![int_index], bool_index),
+        (BuiltIn::Cdr, vec![list_index], list_index),
+        (BuiltIn::Car, vec![list_index], wrapped_index),
+        (BuiltIn::CheckNull, vec![list_index], bool_index),
+        (BuiltIn::Cons, vec![wrapped_index, list_index], list_index),
+        (BuiltIn::List, vec![], list_index),
+    ].into_iter()
+        .map(|&(builtin, ref in_indices, out_index)| {
+            let out_node = graph.add_node(GeneralizedExpr::LabelNode(format!("{} out", builtin)));
+
+            let in_node_vec = in_indices
+                .into_iter()
+                .map(|&in_index| {
+                    let in_node =
+                        graph.add_node(GeneralizedExpr::LabelNode(format!("{} in", builtin)));
+                    graph.add_edge(in_node, in_index, NoLabel);
+                    in_node
+                })
+                .collect();
+
+            graph.add_edge(out_node, out_index, NoLabel);
+            (
+                LispFunc::BuiltIn(builtin),
+                FunctionReference {
+                    ins: in_node_vec,
+                    out: out_node,
+                },
+            )
+        })
+        .collect()
+}
+
 fn add_custom_func<'m>(f: &CustomFunc, context: &'m mut Context) -> &'m FunctionReference {
     let arg_nodes = (0..f.arg_count)
         .map(|i| {
             context
                 .graph
-                .add_node(GeneralizedExpr::DumbNode(format!("in {}", i)))
+                .add_node(GeneralizedExpr::LabelNode(format!("in {}", i)))
         })
         .collect::<Vec<_>>();
     let out_node = context
         .graph
-        .add_node(GeneralizedExpr::DumbNode("out".to_owned()));
+        .add_node(GeneralizedExpr::LabelNode("out".to_owned()));
 
     let reference = FunctionReference {
         ins: arg_nodes,

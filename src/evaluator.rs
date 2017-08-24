@@ -345,10 +345,11 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                                 .iter()
                                 .map(LispValue::get_type)
                                 .collect::<Vec<_>>();
-                            if let Err(e) =
-                                specialization::make_specialization_graph(&f, &arg_types, state)
-                            {
-                                println!("{:?}", e);
+                            if specialization::can_specialize(&f, &arg_types, state) {
+                                // TODO: we can specialize! do something with it
+                                println!("specialization succeeded");
+                            } else {
+                                println!("specialization failed");
                             }
 
                             // Too many arguments or none at all.
