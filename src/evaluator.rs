@@ -113,6 +113,7 @@ fn unitary_list<F: Fn(Vec<LispValue>) -> EvaluationResult<LispValue>>(
     }
 }
 
+#[macro_export]
 macro_rules! destructure {
     ( $y:ident, $x:expr ) => {{$x}};
 
@@ -132,6 +133,8 @@ macro_rules! destructure {
 
 pub fn compile_expr(expr: LispExpr, state: &State) -> EvaluationResult<Vec<Instr>> {
     let mut vek = vec![];
+
+    let finalized_expr = expr.clone().to_top_expr(state)?;
 
     match expr {
         LispExpr::Argument(offset, true) => {
@@ -230,7 +233,8 @@ fn builtin_instr(f: BuiltIn, arg_count: usize) -> EvaluationResult<Instr> {
 
 struct StackRef {
     instr_pointer: usize,
-    #[allow(dead_code)] instr_vec: Rc<RefCell<Vec<Instr>>>,
+    #[allow(dead_code)]
+    instr_vec: Rc<RefCell<Vec<Instr>>>,
     stack_pointer: usize,
     // This reference isn't really static - it refers to vector inside of
     // instr_vec. There's just no way to express this in Rust (I think!)
