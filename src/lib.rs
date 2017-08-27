@@ -6,6 +6,7 @@ extern crate petgraph;
 extern crate test;
 
 pub mod parse;
+#[macro_use]
 pub mod evaluator;
 mod specialization;
 
@@ -14,7 +15,7 @@ use std::iter::repeat;
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::hash::{Hash, Hasher};
-use evaluator::{compile_expr, Instr, State};
+use evaluator::{compile_expr, Instr, State, StateIndex};
 
 type EvaluationResult<T> = Result<T, EvaluationError>;
 
@@ -210,17 +211,18 @@ pub enum TopExpr {
     Regular(FinalizedExpr),
 }
 
-// TODO: add some tests for shadowing of variables
+// TODO: replace bools by two variant enums
 pub enum FinalizedExpr {
     // Arg count, body
     Lambda(usize, Box<FinalizedExpr>),
     // test expr, a branch, b branch
     Cond(Box<FinalizedExpr>, Box<FinalizedExpr>, Box<FinalizedExpr>),
+    IndexedVariable(StateIndex),
     Value(LispValue),
     // Offset from stack pointer, moveable
     Argument(usize, bool),
-    // arguments, tail-call, self-call
-    FunctionCall(Vec<FinalizedExpr>, bool, bool),
+    // function, arguments, tail-call, self-call
+    FunctionCall(Box<FinalizedExpr>, Vec<FinalizedExpr>, bool, bool),
 }
 
 // TODO: expressions with opvars / macros / arguments should probably have their
@@ -239,6 +241,98 @@ pub enum LispExpr {
 }
 
 impl LispExpr {
+    pub fn to_top_expr(self, state: &State) -> EvaluationResult<TopExpr> {
+        if let LispExpr::Call(ref expr_list, _, _) = self {
+            if let Some(&LispExpr::Macro(LispMacro::Define)) = expr_list.get(0) {
+                if let &[LispExpr::OpVar(ref n), ref definition] = &expr_list[1..] {
+                    // FIXME: don't clone!
+                    return Ok(TopExpr::Define(
+                        n.clone(),
+                        definition.clone().finalize(state)?,
+                    ));
+                } else {
+                    return Err(EvaluationError::BadDefine);
+                }
+            }
+        }
+
+        Ok(TopExpr::Regular(self.finalize(state)?))
+    }
+
+    pub fn finalize(self, state: &State) -> EvaluationResult<FinalizedExpr> {
+        // Steps:
+        // 1: lambda stuff: set arguments (bottom up), create new customs
+
+
+        // 2: set moves
+
+
+        // 3: return as FinalizedExpr
+        Ok(match self {
+            // TODO: LispExpr::Argument should probably be removed, right?
+            //LispExpr::Argument(..) => unreachable!(),
+            LispExpr::Argument(i, m) => FinalizedExpr::Argument(i, m),
+            LispExpr::Value(v) => FinalizedExpr::Value(v),
+            LispExpr::OpVar(n) => if let Some(i) = state.get_index(&n) {
+                FinalizedExpr::IndexedVariable(i)
+            } else {
+                return Err(EvaluationError::UnknownVariable(n));
+            },
+            LispExpr::Macro(..) => {
+                return Err(EvaluationError::UnexpectedOperator);
+            }
+            LispExpr::Call(mut expr_list, is_tail_call, is_self_call) => {
+                let head_expr = expr_list.remove(0);
+
+                match head_expr {
+                    LispExpr::Macro(LispMacro::Cond) => {
+                        destructure!(expr_list, [test_expr, true_expr, false_expr], {
+                            FinalizedExpr::Cond(
+                                Box::new(test_expr.finalize(state)?),
+                                Box::new(true_expr.finalize(state)?),
+                                Box::new(false_expr.finalize(state)?),
+                            )
+                        })
+                    }
+                    LispExpr::Macro(LispMacro::Lambda) => {
+                        destructure!(expr_list, [arg_list, body], {
+                            if let LispExpr::Call(ref arg_vec, _is_tail_call, _is_self_call) = arg_list
+                            {
+                                let args = arg_vec
+                                    .into_iter()
+                                    .map(|expr| match *expr {
+                                        LispExpr::OpVar(ref name) => Ok(&name[..]),
+                                        _ => Err(EvaluationError::MalformedDefinition),
+                                    })
+                                    .collect::<EvaluationResult<Vec<_>>>()?;
+                                // TODO: actually prepare the body using arg_list
+                                FinalizedExpr::Lambda(args.len(), Box::new(body.finalize(state)?))
+                            } else {
+                                return Err(EvaluationError::ArgumentTypeMismatch);
+                            }
+                        })
+                    }
+                    // Defines should be caught by to_top_expr
+                    LispExpr::Macro(LispMacro::Define) => unreachable!(),
+                    // Function evaluation
+                    _ => {
+                        // TODO: properly set tail and self call flags
+                        let finalized_args = expr_list
+                            .into_iter()
+                            .map(|e| e.finalize(state))
+                            .collect::<EvaluationResult<Vec<_>>>()?;
+                        FinalizedExpr::FunctionCall(
+                            Box::new(head_expr.finalize(state)?),
+                            finalized_args,
+                            is_tail_call,
+                            is_self_call,
+                        )
+                    }
+                }
+            }
+        })
+    }
+
     pub fn pretty_print(&self, indent: usize) -> String {
         match *self {
             LispExpr::Argument(ref offset, is_move) => {
@@ -398,7 +492,7 @@ pub enum EvaluationError {
     EmptyList,
     UnknownVariable(String),
     MalformedDefinition,
-    TestOneTwoThree,
+    BadDefine,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
