@@ -205,6 +205,24 @@ impl LispMacro {
     }
 }
 
+pub enum TopExpr {
+    Define(String, FinalizedExpr),
+    Regular(FinalizedExpr),
+}
+
+// TODO: add some tests for shadowing of variables
+pub enum FinalizedExpr {
+    // Arg count, body
+    Lambda(usize, Box<FinalizedExpr>),
+    // test expr, a branch, b branch
+    Cond(Box<FinalizedExpr>, Box<FinalizedExpr>, Box<FinalizedExpr>),
+    Value(LispValue),
+    // Offset from stack pointer, moveable
+    Argument(usize, bool),
+    // arguments, tail-call, self-call
+    FunctionCall(Vec<FinalizedExpr>, bool, bool),
+}
+
 // TODO: expressions with opvars / macros / arguments should probably have their
 //       own type at some point.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -554,6 +572,17 @@ mod tests {
         );
 
         assert_eq!(expected_transform, transformed_expr);
+    }
+
+    #[test]
+    fn shadowing() {
+        check_lisp_ok(
+            vec![
+                "(define f (lambda (x) (lambda (x) x)))",
+                "(list ((f #t) 3) ((f (list)) #f))",
+            ],
+            "(3 #f)",
+        );
     }
 
     #[test]
