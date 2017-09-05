@@ -1,6 +1,6 @@
-use super::{ArgType, BuiltIn, EvaluationError, EvaluationResult, LispExpr, LispFunc, LispMacro,
-            LispValue};
-use super::specialization;
+use super::{ArgType, BuiltIn, EvaluationError, EvaluationResult, FinalizedExpr, LispExpr,
+            LispFunc, LispMacro, LispValue, TopExpr};
+//use super::specialization;
 use std::collections::HashMap;
 use std::iter;
 use std::rc::Rc;
@@ -60,9 +60,9 @@ pub enum Instr {
     EvalFunction(usize, bool),
     /// Pops a value from the stack and adds it to the state at the given name
     PopAndSet(String),
-    /// Creates a custom function with given (arguments, function body) and pushes
+    /// Creates a custom function with given (scope level, argument count, function body) and pushes
     /// the result to the stack
-    CreateLambda(Vec<LispExpr>, LispExpr),
+    CreateLambda(usize, usize, FinalizedExpr),
 
     /// Skips the given number of instructions
     Jump(usize),
@@ -131,10 +131,79 @@ macro_rules! destructure {
     };
 }
 
+fn compile_top_expr(expr: TopExpr, state: &State) -> EvaluationResult<Vec<Instr>> {
+    match expr {
+        TopExpr::Define(name, sub_expr) => {
+            let finalized_definition = sub_expr.finalize(
+                0,
+                &::std::collections::HashMap::new(),
+                state,
+                true,
+                Some(&name),
+            )?;
+            let mut instructions = vec![Instr::PopAndSet(name)];
+            instructions.extend(compile_finalized_expr(finalized_definition, state)?);
+            Ok(instructions)
+        }
+        TopExpr::Regular(sub_expr) => compile_finalized_expr(sub_expr, state),
+    }
+}
+
+pub fn compile_finalized_expr(expr: FinalizedExpr, state: &State) -> EvaluationResult<Vec<Instr>> {
+    let mut instructions = Vec::new();
+
+    match expr {
+        FinalizedExpr::Argument(offset, _scope, true) => {
+            instructions.push(Instr::MoveArgument(offset));
+        }
+        FinalizedExpr::Argument(offset, _scope, false) => {
+            instructions.push(Instr::CloneArgument(offset));
+        }
+        FinalizedExpr::Value(v) => {
+            instructions.push(Instr::PushValue(v));
+        }
+        FinalizedExpr::Variable(n) => if let Some(i) = state.get_index(&n) {
+            instructions.push(Instr::PushVariable(i));
+        } else {
+            return Err(EvaluationError::UnknownVariable(n));
+        },
+        FinalizedExpr::Cond(test, true_expr, false_expr) => {
+            let true_expr_vec = compile_finalized_expr(*true_expr, state)?;
+            let false_expr_vec = compile_finalized_expr(*false_expr, state)?;
+            let true_expr_len = true_expr_vec.len();
+            let false_expr_len = false_expr_vec.len();
+
+            instructions.extend(true_expr_vec);
+            instructions.push(Instr::Jump(true_expr_len));
+            instructions.extend(false_expr_vec);
+            instructions.push(Instr::CondJump(false_expr_len + 1));
+            instructions.extend(compile_finalized_expr(*test, state)?);
+        }
+        FinalizedExpr::Lambda(arg_count, scope, body) => {
+            instructions.push(Instr::CreateLambda(arg_count, scope, *body));
+        }
+        FinalizedExpr::FunctionCall(funk, args, is_tail_call, is_self_call) => {
+            if let FinalizedExpr::Value(LispValue::Function(LispFunc::BuiltIn(f))) = *funk {
+                instructions.push(builtin_instr(f, args.len())?);
+            } else if is_tail_call && is_self_call {
+                instructions.push(Instr::Recurse(args.len()));
+            } else {
+                instructions.push(Instr::EvalFunction(args.len(), is_tail_call));
+                instructions.extend(compile_finalized_expr(*funk, state)?);
+            }
+
+            for expr in args.into_iter().rev() {
+                let instr_vec = compile_finalized_expr(expr, state)?;
+                instructions.extend(instr_vec);
+            }
+        }
+    }
+
+    Ok(instructions)
+}
+
 pub fn compile_expr(expr: LispExpr, state: &State) -> EvaluationResult<Vec<Instr>> {
     let mut vek = vec![];
-
-    let finalized_expr = expr.clone().to_top_expr(state)?;
 
     match expr {
         LispExpr::Argument(offset, true) => {
@@ -176,7 +245,7 @@ pub fn compile_expr(expr: LispExpr, state: &State) -> EvaluationResult<Vec<Instr
                     expr_list,
                     [arg_list, body],
                     if let LispExpr::Call(arg_vec, _is_tail_call, _is_self_call) = arg_list {
-                        vek.push(Instr::CreateLambda(arg_vec, body));
+                        //vek.push(Instr::CreateLambda(arg_vec.len(), 0, body.finalize()));
                     } else {
                         return Err(EvaluationError::ArgumentTypeMismatch);
                     }
@@ -255,9 +324,10 @@ impl StackRef {
 }
 
 pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
+    let top_expr = expr.to_top_expr(state)?;
     let mut return_values: Vec<LispValue> = Vec::new();
     let mut stax = vec![];
-    let mut stack_ref = StackRef::new(Rc::new(RefCell::new(compile_expr(expr, state)?)), 0);
+    let mut stack_ref = StackRef::new(Rc::new(RefCell::new(compile_top_expr(top_expr, state)?)), 0);
 
     'l: loop {
         // Pop stack frame when there's no more instructions in this one
@@ -281,21 +351,22 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                 return_values.splice(stack_ref.stack_pointer..top_index, iter::empty());
                 stack_ref.instr_pointer = { stack_ref.instr_slice.len() };
             }
-            Instr::CreateLambda(ref arg_vec, ref body) => {
-                let args = arg_vec
-                    .into_iter()
-                    .map(|expr| match *expr {
-                        LispExpr::OpVar(ref name) => Ok(&name[..]),
-                        _ => Err(EvaluationError::MalformedDefinition),
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
+            Instr::CreateLambda(arg_count, scope, ref body) => {
+                // let args = arg_vec
+                //     .into_iter()
+                //     .map(|expr| match *expr {
+                //         LispExpr::OpVar(ref name) => Ok(&name[..]),
+                //         _ => Err(EvaluationError::MalformedDefinition),
+                //     })
+                //     .collect::<Result<Vec<_>, _>>()?;
 
                 // If there are any references to function arguments in
                 // the lambda body, we should resolve them before
                 // creating the lambda.
                 // This enables us to do closures.
-                let walked_body = body.replace_args(&return_values[stack_ref.stack_pointer..]);
-                let f = LispFunc::new_custom(&args, walked_body, state);
+                let walked_body =
+                    body.replace_args(scope, &return_values[stack_ref.stack_pointer..]);
+                let f = LispFunc::new_custom(arg_count, walked_body, state);
 
                 return_values.push(LispValue::Function(f));
             }
@@ -343,17 +414,17 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                         }
                         LispFunc::Custom(f) => {
                             // FIXME: DEBUGGING ONLY
-                            let index = return_values.len() - arg_count;
-                            let arg_types = return_values[index..]
-                                .iter()
-                                .map(LispValue::get_type)
-                                .collect::<Vec<_>>();
-                            if specialization::can_specialize(&f, &arg_types, state) {
-                                // TODO: we can specialize! do something with it
-                                println!("specialization succeeded");
-                            } else {
-                                println!("specialization failed");
-                            }
+                            // let index = return_values.len() - arg_count;
+                            // let arg_types = return_values[index..]
+                            //     .iter()
+                            //     .map(LispValue::get_type)
+                            //     .collect::<Vec<_>>();
+                            // if specialization::can_specialize(&f, &arg_types, state) {
+                            //     // TODO: we can specialize! do something with it
+                            //     println!("specialization succeeded");
+                            // } else {
+                            //     println!("specialization failed");
+                            // }
 
                             // Too many arguments or none at all.
                             if f.arg_count < arg_count || arg_count == 0 {
