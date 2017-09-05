@@ -332,8 +332,6 @@ pub enum LispExpr {
     Macro(LispMacro),
     Value(LispValue),
     OpVar(String),
-    // First bool argument states whether the call is a
-    // tail call. Second states whether it is a self-call.
     Call(Vec<LispExpr>),
 }
 
@@ -679,6 +677,28 @@ mod tests {
                 "(list ((f #t) 3) ((f (list)) #f))",
             ],
             "(3 #f)",
+        );
+    }
+
+    #[test]
+    fn shadowing_two() {
+        check_lisp_ok(
+            vec![
+                "(define add (lambda (x y) (cond (zero? y) x (add (add1 x) (sub1 y)))))",
+                "((lambda (x) (add ((lambda (x) (add1 x)) x) x)) 10)",
+            ],
+            "21",
+        );
+    }
+
+    #[test]
+    fn shadowing_three() {
+        check_lisp_ok(
+            vec![
+                "(define add (lambda (x y) (cond (zero? y) x (add (add1 x) (sub1 y)))))",
+                "((lambda (x) (add x ((lambda (x) (add (sub1 x) x)) x))) 4)",
+            ],
+            "11",
         );
     }
 

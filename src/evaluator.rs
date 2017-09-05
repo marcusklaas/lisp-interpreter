@@ -99,7 +99,6 @@ fn unitary_int<F: Fn(u64) -> EvaluationResult<LispValue>>(
     if let &mut LispValue::Integer(i) = reference {
         Ok(*reference = f(i)?)
     } else {
-        println!("mismatched 3");
         Err(EvaluationError::ArgumentTypeMismatch)
     }
 }
@@ -111,7 +110,6 @@ fn unitary_list<F: Fn(Vec<LispValue>) -> EvaluationResult<LispValue>>(
     match stack.pop().unwrap() {
         LispValue::List(v) => Ok(stack.push(f(v)?)),
         _ => {
-            println!("mismatched 4");
             Err(EvaluationError::ArgumentTypeMismatch)
         }
     }
@@ -268,8 +266,6 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
         let mut update_stacks = None;
         stack_ref.instr_pointer -= 1;
 
-        println!("{:?}", stack_ref.instr_slice[stack_ref.instr_pointer]);
-
         match stack_ref.instr_slice[stack_ref.instr_pointer] {
             Instr::Recurse(arg_count) => {
                 let top_index = return_values.len() - arg_count;
@@ -295,7 +291,6 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                     stack_ref.instr_pointer -= n;
                 }
             } else {
-                println!("mismatched 1");
                 return Err(EvaluationError::ArgumentTypeMismatch);
             },
             Instr::PushValue(ref v) => {
@@ -406,7 +401,6 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                 new_vec.push(return_values.pop().unwrap());
                 return_values.push(LispValue::List(new_vec));
             } else {
-                println!("mismatched 2");
                 return Err(EvaluationError::ArgumentTypeMismatch);
             },
             Instr::CheckZero => {
