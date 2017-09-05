@@ -99,7 +99,7 @@ fn unitary_int<F: Fn(u64) -> EvaluationResult<LispValue>>(
     if let &mut LispValue::Integer(i) = reference {
         Ok(*reference = f(i)?)
     } else {
-                println!("mismatched 3");
+        println!("mismatched 3");
         Err(EvaluationError::ArgumentTypeMismatch)
     }
 }
@@ -111,9 +111,9 @@ fn unitary_list<F: Fn(Vec<LispValue>) -> EvaluationResult<LispValue>>(
     match stack.pop().unwrap() {
         LispValue::List(v) => Ok(stack.push(f(v)?)),
         _ => {
-            
-                println!("mismatched 4");
-                Err(EvaluationError::ArgumentTypeMismatch)}
+            println!("mismatched 4");
+            Err(EvaluationError::ArgumentTypeMismatch)
+        }
     }
 }
 
@@ -184,6 +184,8 @@ pub fn compile_finalized_expr(expr: FinalizedExpr, state: &State) -> EvaluationR
             instructions.extend(compile_finalized_expr(*test, state)?);
         }
         FinalizedExpr::Lambda(arg_count, scope, body) => {
+            println!("func body: {:?}", (*body).clone());
+
             instructions.push(Instr::CreateLambda(arg_count, scope, *body));
         }
         FinalizedExpr::FunctionCall(funk, args, is_tail_call, is_self_call) => {
