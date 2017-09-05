@@ -1,5 +1,5 @@
 use super::{ArgType, BuiltIn, EvaluationError, EvaluationResult, FinalizedExpr, LispExpr,
-            LispFunc, LispMacro, LispValue, TopExpr};
+            LispFunc, LispValue, TopExpr};
 //use super::specialization;
 use std::collections::HashMap;
 use std::iter;
@@ -99,6 +99,7 @@ fn unitary_int<F: Fn(u64) -> EvaluationResult<LispValue>>(
     if let &mut LispValue::Integer(i) = reference {
         Ok(*reference = f(i)?)
     } else {
+                println!("mismatched 3");
         Err(EvaluationError::ArgumentTypeMismatch)
     }
 }
@@ -109,7 +110,10 @@ fn unitary_list<F: Fn(Vec<LispValue>) -> EvaluationResult<LispValue>>(
 ) -> EvaluationResult<()> {
     match stack.pop().unwrap() {
         LispValue::List(v) => Ok(stack.push(f(v)?)),
-        _ => Err(EvaluationError::ArgumentTypeMismatch),
+        _ => {
+            
+                println!("mismatched 4");
+                Err(EvaluationError::ArgumentTypeMismatch)}
     }
 }
 
@@ -202,89 +206,6 @@ pub fn compile_finalized_expr(expr: FinalizedExpr, state: &State) -> EvaluationR
     Ok(instructions)
 }
 
-pub fn compile_expr(expr: LispExpr, state: &State) -> EvaluationResult<Vec<Instr>> {
-    let mut vek = vec![];
-
-    match expr {
-        LispExpr::Argument(offset, true) => {
-            vek.push(Instr::MoveArgument(offset));
-        }
-        LispExpr::Argument(offset, false) => {
-            vek.push(Instr::CloneArgument(offset));
-        }
-        LispExpr::Value(v) => {
-            vek.push(Instr::PushValue(v));
-        }
-        LispExpr::OpVar(n) => if let Some(i) = state.get_index(&n) {
-            vek.push(Instr::PushVariable(i));
-        } else {
-            return Err(EvaluationError::UnknownVariable(n));
-        },
-        LispExpr::Macro(..) => {
-            return Err(EvaluationError::UnexpectedOperator);
-        }
-        LispExpr::Call(mut expr_list, is_tail_call, is_self_call) => {
-            let head_expr = expr_list.remove(0);
-
-            match head_expr {
-                LispExpr::Macro(LispMacro::Cond) => {
-                    destructure!(expr_list, [boolean, true_expr, false_expr], {
-                        let true_expr_vec = compile_expr(true_expr, state)?;
-                        let false_expr_vec = compile_expr(false_expr, state)?;
-                        let true_expr_len = true_expr_vec.len();
-                        let false_expr_len = false_expr_vec.len();
-
-                        vek.extend(true_expr_vec);
-                        vek.push(Instr::Jump(true_expr_len));
-                        vek.extend(false_expr_vec);
-                        vek.push(Instr::CondJump(false_expr_len + 1));
-                        vek.extend(compile_expr(boolean, state)?);
-                    })
-                }
-                LispExpr::Macro(LispMacro::Lambda) => destructure!(
-                    expr_list,
-                    [arg_list, body],
-                    if let LispExpr::Call(arg_vec, _is_tail_call, _is_self_call) = arg_list {
-                        //vek.push(Instr::CreateLambda(arg_vec.len(), 0, body.finalize()));
-                    } else {
-                        return Err(EvaluationError::ArgumentTypeMismatch);
-                    }
-                ),
-                LispExpr::Macro(LispMacro::Define) => destructure!(
-                    expr_list,
-                    [var_name, definition],
-                    if let LispExpr::OpVar(name) = var_name {
-                        let mut def = definition;
-                        def.flag_self_calls(&name);
-                        vek.push(Instr::PopAndSet(name.clone()));
-                        vek.extend(compile_expr(def, state)?);
-                    } else {
-                        return Err(EvaluationError::ArgumentTypeMismatch);
-                    }
-                ),
-                // Function evaluation
-                _ => {
-                    if let LispExpr::Value(LispValue::Function(LispFunc::BuiltIn(f))) = head_expr {
-                        vek.push(builtin_instr(f, expr_list.len())?);
-                    } else if is_tail_call && is_self_call {
-                        vek.push(Instr::Recurse(expr_list.len()));
-                    } else {
-                        vek.push(Instr::EvalFunction(expr_list.len(), is_tail_call));
-                        vek.extend(compile_expr(head_expr, state)?);
-                    }
-
-                    for expr in expr_list.into_iter().rev() {
-                        let instr_vec = compile_expr(expr, state)?;
-                        vek.extend(instr_vec);
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(vek)
-}
-
 fn builtin_instr(f: BuiltIn, arg_count: usize) -> EvaluationResult<Instr> {
     Ok(match (f, arg_count) {
         (BuiltIn::AddOne, 1) => Instr::AddOne,
@@ -345,6 +266,8 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
         let mut update_stacks = None;
         stack_ref.instr_pointer -= 1;
 
+        println!("{:?}", stack_ref.instr_slice[stack_ref.instr_pointer]);
+
         match stack_ref.instr_slice[stack_ref.instr_pointer] {
             Instr::Recurse(arg_count) => {
                 let top_index = return_values.len() - arg_count;
@@ -352,21 +275,13 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                 stack_ref.instr_pointer = { stack_ref.instr_slice.len() };
             }
             Instr::CreateLambda(arg_count, scope, ref body) => {
-                // let args = arg_vec
-                //     .into_iter()
-                //     .map(|expr| match *expr {
-                //         LispExpr::OpVar(ref name) => Ok(&name[..]),
-                //         _ => Err(EvaluationError::MalformedDefinition),
-                //     })
-                //     .collect::<Result<Vec<_>, _>>()?;
-
                 // If there are any references to function arguments in
                 // the lambda body, we should resolve them before
                 // creating the lambda.
                 // This enables us to do closures.
                 let walked_body =
                     body.replace_args(scope, &return_values[stack_ref.stack_pointer..]);
-                let f = LispFunc::new_custom(arg_count, walked_body, state);
+                let f = LispFunc::new_custom(arg_count, walked_body);
 
                 return_values.push(LispValue::Function(f));
             }
@@ -378,6 +293,7 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                     stack_ref.instr_pointer -= n;
                 }
             } else {
+                println!("mismatched 1");
                 return Err(EvaluationError::ArgumentTypeMismatch);
             },
             Instr::PushValue(ref v) => {
@@ -488,6 +404,7 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                 new_vec.push(return_values.pop().unwrap());
                 return_values.push(LispValue::List(new_vec));
             } else {
+                println!("mismatched 2");
                 return Err(EvaluationError::ArgumentTypeMismatch);
             },
             Instr::CheckZero => {
