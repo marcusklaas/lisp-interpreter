@@ -127,9 +127,7 @@ mod tests {
     #[test]
     fn parse_double_parens() {
         let lit = "(())";
-        let expected = Ok(LispExpr::Call(
-            vec![LispExpr::Call(vec![])],
-        ));
+        let expected = Ok(LispExpr::Call(vec![LispExpr::Call(vec![])]));
 
         let result = parse_lisp_string(lit);
         assert_eq!(expected, result);
@@ -150,25 +148,19 @@ mod tests {
     fn parse_lisp_string_ok() {
         let lit = "(first (list 1 (+ 2 3) 9))";
 
-        let expected = Ok(LispExpr::Call(
-            vec![
-                LispExpr::OpVar("first".to_owned()),
-                LispExpr::Call(
-                    vec![
-                        LispExpr::Value(LispValue::Function(LispFunc::BuiltIn(BuiltIn::List))),
-                        LispExpr::Value(LispValue::Integer(1)),
-                        LispExpr::Call(
-                            vec![
-                                LispExpr::OpVar("+".to_owned()),
-                                LispExpr::Value(LispValue::Integer(2)),
-                                LispExpr::Value(LispValue::Integer(3)),
-                            ],
-                        ),
-                        LispExpr::Value(LispValue::Integer(9)),
-                    ],
-                ),
-            ],
-        ));
+        let expected = Ok(LispExpr::Call(vec![
+            LispExpr::OpVar("first".to_owned()),
+            LispExpr::Call(vec![
+                LispExpr::Value(LispValue::Function(LispFunc::BuiltIn(BuiltIn::List))),
+                LispExpr::Value(LispValue::Integer(1)),
+                LispExpr::Call(vec![
+                    LispExpr::OpVar("+".to_owned()),
+                    LispExpr::Value(LispValue::Integer(2)),
+                    LispExpr::Value(LispValue::Integer(3)),
+                ]),
+                LispExpr::Value(LispValue::Integer(9)),
+            ]),
+        ]));
 
         let result = parse_lisp_string(lit);
         assert_eq!(expected, result);

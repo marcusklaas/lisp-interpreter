@@ -226,7 +226,7 @@ pub enum FinalizedExpr {
     Lambda(usize, usize, Box<FinalizedExpr>),
     // test expr, true branch, false branch
     // FIXME: don't do three boxes, but a single box containing triple
-    Cond(Box<FinalizedExpr>, Box<FinalizedExpr>, Box<FinalizedExpr>),
+    Cond(Box<(FinalizedExpr, FinalizedExpr, FinalizedExpr)>),
     Variable(String),
     Value(LispValue),
     // Offset from stack pointer, scope level, moveable
@@ -253,11 +253,14 @@ impl FinalizedExpr {
                     is_self_call,
                 )
             }
-            FinalizedExpr::Cond(ref test, ref true_expr, ref false_expr) => FinalizedExpr::Cond(
-                Box::new(test.replace_args(scope_level, stack)),
-                Box::new(true_expr.replace_args(scope_level, stack)),
-                Box::new(false_expr.replace_args(scope_level, stack)),
-            ),
+            FinalizedExpr::Cond(ref triple) => {
+                let (ref test, ref true_expr, ref false_expr) = **triple;
+                FinalizedExpr::Cond(Box::new((
+                    test.replace_args(scope_level, stack),
+                    true_expr.replace_args(scope_level, stack),
+                    false_expr.replace_args(scope_level, stack),
+                )))
+            }
             FinalizedExpr::Lambda(arg_c, scope, ref body) => FinalizedExpr::Lambda(
                 arg_c,
                 scope,
@@ -274,8 +277,9 @@ impl FinalizedExpr {
             }
             FinalizedExpr::Value(ref v) => v.pretty_print(indent),
             FinalizedExpr::Variable(ref name) => name.clone(),
-            FinalizedExpr::Cond(ref test, ref true_expr, ref false_expr) => {
-                let expr_iter = Some(&**true_expr).into_iter().chain(Some(&**false_expr));
+            FinalizedExpr::Cond(ref triple) => {
+                let (ref test, ref true_expr, ref false_expr) = **triple;
+                let expr_iter = Some(&*true_expr).into_iter().chain(Some(&*false_expr));
                 format_list(
                     indent,
                     "cond".to_owned(),
@@ -385,20 +389,20 @@ impl LispExpr {
                     LispExpr::Macro(LispMacro::Cond) => {
                         destructure!(expr_list, [test_expr, true_expr, false_expr], {
                             let false_expr_args = arguments.clone();
-                            let finalized_false_expr = Box::new(false_expr.finalize(
+                            let finalized_false_expr = false_expr.finalize(
                                 scope_level,
                                 &false_expr_args,
                                 state,
                                 can_tail_call,
                                 own_name,
-                            )?);
-                            let finalized_true_expr = Box::new(true_expr.finalize(
+                            )?;
+                            let finalized_true_expr = true_expr.finalize(
                                 scope_level,
                                 arguments,
                                 state,
                                 can_tail_call,
                                 own_name,
-                            )?);
+                            )?;
 
                             for key in arguments.keys() {
                                 let new_value =
@@ -406,24 +410,16 @@ impl LispExpr {
                                 arguments[key].2.replace(new_value);
                             }
 
-                            FinalizedExpr::Cond(
-                                Box::new(test_expr.finalize(
-                                    scope_level,
-                                    arguments,
-                                    state,
-                                    false,
-                                    own_name,
-                                )?),
+                            FinalizedExpr::Cond(Box::new((
+                                test_expr.finalize(scope_level, arguments, state, false, own_name)?,
                                 finalized_true_expr,
                                 finalized_false_expr,
-                            )
+                            )))
                         })
                     }
                     LispExpr::Macro(LispMacro::Lambda) => {
                         destructure!(expr_list, [arg_list, body], {
-                            if let LispExpr::Call(ref arg_vec) =
-                                arg_list
-                            {
+                            if let LispExpr::Call(ref arg_vec) = arg_list {
                                 // Add arguments to the arguments map, overwriting existing
                                 // ones if they have the same symbol.
                                 // FIXME: movement of arguments that aren't overwritten are screwed by this
@@ -477,7 +473,8 @@ impl LispExpr {
                         // get to use the moves first.
                         let mut arg_finalized_expr = Vec::new();
                         for e in expr_list.into_iter().rev() {
-                            let finalized = e.finalize(scope_level, arguments, state, false, own_name)?;
+                            let finalized =
+                                e.finalize(scope_level, arguments, state, false, own_name)?;
                             arg_finalized_expr.push(finalized);
                         }
                         arg_finalized_expr.reverse();

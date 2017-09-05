@@ -171,9 +171,11 @@ pub fn compile_finalized_expr(expr: FinalizedExpr, state: &State) -> EvaluationR
         } else {
             return Err(EvaluationError::UnknownVariable(n));
         },
-        FinalizedExpr::Cond(test, true_expr, false_expr) => {
-            let true_expr_vec = compile_finalized_expr(*true_expr, state)?;
-            let false_expr_vec = compile_finalized_expr(*false_expr, state)?;
+        FinalizedExpr::Cond(triple) => {
+            let unpacked = *triple;
+            let (test, true_expr, false_expr) = unpacked;
+            let true_expr_vec = compile_finalized_expr(true_expr, state)?;
+            let false_expr_vec = compile_finalized_expr(false_expr, state)?;
             let true_expr_len = true_expr_vec.len();
             let false_expr_len = false_expr_vec.len();
 
@@ -181,11 +183,9 @@ pub fn compile_finalized_expr(expr: FinalizedExpr, state: &State) -> EvaluationR
             instructions.push(Instr::Jump(true_expr_len));
             instructions.extend(false_expr_vec);
             instructions.push(Instr::CondJump(false_expr_len + 1));
-            instructions.extend(compile_finalized_expr(*test, state)?);
+            instructions.extend(compile_finalized_expr(test, state)?);
         }
         FinalizedExpr::Lambda(arg_count, scope, body) => {
-            println!("func body: {:?}", (*body).clone());
-
             instructions.push(Instr::CreateLambda(arg_count, scope, *body));
         }
         FinalizedExpr::FunctionCall(funk, args, is_tail_call, is_self_call) => {
