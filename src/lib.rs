@@ -8,7 +8,8 @@ extern crate test;
 pub mod parse;
 #[macro_use]
 pub mod evaluator;
-mod specialization;
+// TODO: make specialization compatible with FinalizedExpr
+// mod specialization;
 
 use std::fmt;
 use std::iter::repeat;
@@ -16,14 +17,14 @@ use std::rc::Rc;
 use std::cell::{Cell, RefCell};
 use std::hash::{Hash, Hasher};
 use std::collections::HashMap;
-use evaluator::{compile_expr, Instr, State, StateIndex};
+use evaluator::{compile_expr, compile_finalized_expr, Instr, State, StateIndex};
 
 type EvaluationResult<T> = Result<T, EvaluationError>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CustomFunc {
     arg_count: usize,
-    body: Rc<LispExpr>,
+    body: Rc<FinalizedExpr>,
     byte_code: Rc<RefCell<Vec<Instr>>>,
 }
 
@@ -51,9 +52,9 @@ impl CustomFunc {
         }
 
         let mut body = (&*self.body).clone();
-        let mut arg_vec: Vec<bool> = repeat(true).take(self.arg_count).collect();
-        body.set_moves(&mut arg_vec);
-        *(self.byte_code.borrow_mut()) = compile_expr(body, state)?;
+        // let mut arg_vec: Vec<bool> = repeat(true).take(self.arg_count).collect();
+        // body.set_moves(&mut arg_vec);
+        *(self.byte_code.borrow_mut()) = compile_finalized_expr(body, state)?;
         Ok(self.byte_code.clone())
     }
 
@@ -143,10 +144,10 @@ pub enum LispFunc {
 }
 
 impl LispFunc {
-    pub fn new_custom(args: &[&str], body: LispExpr, state: &State) -> LispFunc {
+    pub fn new_custom(arg_count: usize, body: FinalizedExpr, state: &State) -> LispFunc {
         LispFunc::Custom(CustomFunc {
-            arg_count: args.len(),
-            body: Rc::new(body.transform(args, state, true)),
+            arg_count: arg_count,
+            body: Rc::new(body),
             byte_code: Rc::new(RefCell::new(Vec::new())),
         })
     }
@@ -158,15 +159,23 @@ impl LispFunc {
         stack: &[LispValue],
     ) -> LispFunc {
         let arg_count = total_args - supplied_args;
-        let mut call_vec = vec![LispExpr::Value(LispValue::Function(LispFunc::Custom(f)))];
-        call_vec.extend(stack[..supplied_args].iter().cloned().map(LispExpr::Value));
-        call_vec.extend(
-            (0..total_args - supplied_args).map(|o| LispExpr::Argument(o, true)),
+        let funk = Box::new(FinalizedExpr::Value(
+            LispValue::Function(LispFunc::Custom(f)),
+        ));
+        let mut arg_vec: Vec<_> = stack[..supplied_args]
+            .iter()
+            .cloned()
+            .map(FinalizedExpr::Value)
+            .collect();
+        arg_vec.extend(
+            // TODO: check that we can get away with just setting scope to 0
+            // or whether we need to be more clever
+            (0..total_args - supplied_args).map(|o| FinalizedExpr::Argument(o, 0, true)),
         );
 
         LispFunc::Custom(CustomFunc {
             arg_count: arg_count,
-            body: Rc::new(LispExpr::Call(call_vec, true, false)),
+            body: Rc::new(FinalizedExpr::FunctionCall(funk, arg_vec, true, false)),
             byte_code: Rc::new(RefCell::new(Vec::new())),
         })
     }
@@ -208,12 +217,12 @@ impl LispMacro {
 }
 
 pub enum TopExpr {
-    Define(String, FinalizedExpr),
+    Define(String, LispExpr),
     Regular(FinalizedExpr),
 }
 
 // TODO: replace bools by two variant enums
-#[derive(Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum FinalizedExpr {
     // Arg count, scope level, body
     Lambda(usize, usize, Box<FinalizedExpr>),
@@ -259,6 +268,11 @@ impl FinalizedExpr {
             ref x => x.clone(),
         }
     }
+
+    pub fn pretty_print(&self, _indent: usize) -> String {
+        // TODO: implement
+        String::new()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -284,7 +298,7 @@ impl LispExpr {
                         n.clone(),
                         definition
                             .clone()
-                            .finalize(0, &HashMap::new(), state, true, Some(n))?,
+                            //.finalize(0, &HashMap::new(), state, true, Some(n))?,
                     ))
                 } else {
                     Err(EvaluationError::BadDefine)
