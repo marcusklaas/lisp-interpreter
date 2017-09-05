@@ -137,10 +137,10 @@ fn make_specialization_graph<'e>(
     let res = expand_graph(&(*f.body), &main_ref, &mut context)?;
     context.graph.add_edge(res, main_ref.out, NoLabel);
 
-    println!(
-        "{}",
-        Dot::with_config(&context.graph, &[Config::EdgeNoLabel])
-    );
+    // println!(
+    //     "{}",
+    //     Dot::with_config(&context.graph, &[Config::EdgeNoLabel])
+    // );
 
     Ok(context.graph)
 }

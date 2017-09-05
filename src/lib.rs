@@ -13,8 +13,9 @@ mod specialization;
 use std::fmt;
 use std::iter::repeat;
 use std::rc::Rc;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::hash::{Hash, Hasher};
+use std::collections::HashMap;
 use evaluator::{compile_expr, Instr, State, StateIndex};
 
 type EvaluationResult<T> = Result<T, EvaluationError>;
@@ -212,21 +213,54 @@ pub enum TopExpr {
 }
 
 // TODO: replace bools by two variant enums
+#[derive(Clone)]
 pub enum FinalizedExpr {
-    // Arg count, body
-    Lambda(usize, Box<FinalizedExpr>),
+    // Arg count, scope level, body
+    Lambda(usize, usize, Box<FinalizedExpr>),
     // test expr, a branch, b branch
+    // FIXME: don't do three boxes, but a single box containing triple
     Cond(Box<FinalizedExpr>, Box<FinalizedExpr>, Box<FinalizedExpr>),
-    IndexedVariable(StateIndex),
+    Variable(String),
     Value(LispValue),
-    // Offset from stack pointer, moveable
-    Argument(usize, bool),
+    // Offset from stack pointer, scope level, moveable
+    Argument(usize, usize, bool),
     // function, arguments, tail-call, self-call
+    // FIXME: don't do double box
     FunctionCall(Box<FinalizedExpr>, Vec<FinalizedExpr>, bool, bool),
 }
 
-// TODO: expressions with opvars / macros / arguments should probably have their
-//       own type at some point.
+impl FinalizedExpr {
+    // Resolves references to function arguments. Used when creating closures.
+    pub fn replace_args(&self, scope_level: usize, stack: &[LispValue]) -> FinalizedExpr {
+        match *self {
+            FinalizedExpr::Argument(index, arg_scope, _is_move) if arg_scope == scope_level => {
+                FinalizedExpr::Value(stack[index].clone())
+            }
+            FinalizedExpr::FunctionCall(ref head, ref vec, is_tail_call, is_self_call) => {
+                FinalizedExpr::FunctionCall(
+                    Box::new(head.replace_args(scope_level, stack)),
+                    vec.iter()
+                        .map(|e| e.replace_args(scope_level, stack))
+                        .collect(),
+                    is_tail_call,
+                    is_self_call,
+                )
+            }
+            FinalizedExpr::Cond(ref test, ref true_expr, ref false_expr) => FinalizedExpr::Cond(
+                Box::new(test.replace_args(scope_level, stack)),
+                Box::new(true_expr.replace_args(scope_level, stack)),
+                Box::new(false_expr.replace_args(scope_level, stack)),
+            ),
+            FinalizedExpr::Lambda(arg_c, scope, ref body) => FinalizedExpr::Lambda(
+                arg_c,
+                scope,
+                Box::new(body.replace_args(scope_level, stack)),
+            ),
+            ref x => x.clone(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LispExpr {
     Macro(LispMacro),
@@ -244,69 +278,129 @@ impl LispExpr {
     pub fn to_top_expr(self, state: &State) -> EvaluationResult<TopExpr> {
         if let LispExpr::Call(ref expr_list, _, _) = self {
             if let Some(&LispExpr::Macro(LispMacro::Define)) = expr_list.get(0) {
-                if let &[LispExpr::OpVar(ref n), ref definition] = &expr_list[1..] {
+                return if let &[LispExpr::OpVar(ref n), ref definition] = &expr_list[1..] {
                     // FIXME: don't clone!
-                    return Ok(TopExpr::Define(
+                    Ok(TopExpr::Define(
                         n.clone(),
-                        definition.clone().finalize(state)?,
-                    ));
+                        definition
+                            .clone()
+                            .finalize(0, &HashMap::new(), state, true, Some(n))?,
+                    ))
                 } else {
-                    return Err(EvaluationError::BadDefine);
-                }
+                    Err(EvaluationError::BadDefine)
+                };
             }
         }
 
-        Ok(TopExpr::Regular(self.finalize(state)?))
+        Ok(TopExpr::Regular(
+            self.finalize(0, &HashMap::new(), state, true, None)?,
+        ))
     }
 
-    pub fn finalize(self, state: &State) -> EvaluationResult<FinalizedExpr> {
-        // Steps:
-        // 1: lambda stuff: set arguments (bottom up), create new customs
-
-
-        // 2: set moves
-
-
-        // 3: return as FinalizedExpr
+    pub fn finalize(
+        self,
+        scope_level: usize,
+        // maps symbols to (scope_level, offset, moveable)
+        arguments: &HashMap<String, (usize, usize, Cell<bool>)>,
+        state: &State,
+        can_tail_call: bool,
+        own_name: Option<&str>,
+    ) -> EvaluationResult<FinalizedExpr> {
         Ok(match self {
             // TODO: LispExpr::Argument should probably be removed, right?
-            //LispExpr::Argument(..) => unreachable!(),
-            LispExpr::Argument(i, m) => FinalizedExpr::Argument(i, m),
+            // LispExpr::Argument(..) => unreachable!(),
+            LispExpr::Argument(i, m) => FinalizedExpr::Argument(i, 0, m),
             LispExpr::Value(v) => FinalizedExpr::Value(v),
-            LispExpr::OpVar(n) => if let Some(i) = state.get_index(&n) {
-                FinalizedExpr::IndexedVariable(i)
-            } else {
-                return Err(EvaluationError::UnknownVariable(n));
-            },
+            LispExpr::OpVar(n) => {
+                // So if we encounter a symbol, it could be two things:
+                // a function argument, in which case it should be in the arguments map
+                // a reference to something in our state.
+                // Function arguments take precendence.
+                if let Some(&(arg_scope, arg_offset, ref moveable)) = arguments.get(&n) {
+                    let is_moveable = moveable.get();
+                    moveable.replace(false);
+                    FinalizedExpr::Argument(arg_offset, arg_scope, is_moveable)
+                } else {
+                    FinalizedExpr::Variable(n)
+                }
+            }
             LispExpr::Macro(..) => {
                 return Err(EvaluationError::UnexpectedOperator);
             }
-            LispExpr::Call(mut expr_list, is_tail_call, is_self_call) => {
+            LispExpr::Call(mut expr_list, _is_tail_call, _is_self_call) => {
                 let head_expr = expr_list.remove(0);
 
                 match head_expr {
                     LispExpr::Macro(LispMacro::Cond) => {
                         destructure!(expr_list, [test_expr, true_expr, false_expr], {
+                            let false_expr_args = arguments.clone();
+                            let finalized_false_expr = Box::new(false_expr.finalize(
+                                scope_level,
+                                &false_expr_args,
+                                state,
+                                true,
+                                own_name,
+                            )?);
+                            let finalized_true_expr = Box::new(true_expr.finalize(
+                                scope_level,
+                                arguments,
+                                state,
+                                true,
+                                own_name,
+                            )?);
+
+                            for key in arguments.keys() {
+                                let new_value =
+                                    arguments[key].2.get() && false_expr_args[key].2.get();
+                                arguments[key].2.replace(new_value);
+                            }
+
                             FinalizedExpr::Cond(
-                                Box::new(test_expr.finalize(state)?),
-                                Box::new(true_expr.finalize(state)?),
-                                Box::new(false_expr.finalize(state)?),
+                                Box::new(test_expr.finalize(
+                                    scope_level,
+                                    arguments,
+                                    state,
+                                    true,
+                                    own_name,
+                                )?),
+                                finalized_true_expr,
+                                finalized_false_expr,
                             )
                         })
                     }
                     LispExpr::Macro(LispMacro::Lambda) => {
                         destructure!(expr_list, [arg_list, body], {
-                            if let LispExpr::Call(ref arg_vec, _is_tail_call, _is_self_call) = arg_list
+                            if let LispExpr::Call(ref arg_vec, _is_tail_call, _is_self_call) =
+                                arg_list
                             {
-                                let args = arg_vec
-                                    .into_iter()
-                                    .map(|expr| match *expr {
+                                // Add arguments to the arguments map, overwriting existing
+                                // ones if they have the same symbol.
+                                let mut new_arguments = arguments.clone();
+                                let num_args = arg_vec.len();
+
+                                for (offset, expr) in arg_vec.into_iter().enumerate() {
+                                    let symbol = match *expr {
                                         LispExpr::OpVar(ref name) => Ok(&name[..]),
                                         _ => Err(EvaluationError::MalformedDefinition),
-                                    })
-                                    .collect::<EvaluationResult<Vec<_>>>()?;
-                                // TODO: actually prepare the body using arg_list
-                                FinalizedExpr::Lambda(args.len(), Box::new(body.finalize(state)?))
+                                    }?;
+
+                                    new_arguments.insert(
+                                        symbol.to_owned(),
+                                        (scope_level, offset, Cell::new(true)),
+                                    );
+                                }
+
+                                FinalizedExpr::Lambda(
+                                    num_args,
+                                    scope_level,
+                                    Box::new(body.finalize(
+                                        scope_level + 1,
+                                        &new_arguments,
+                                        state,
+                                        true,
+                                        own_name,
+                                    )?),
+                                )
                             } else {
                                 return Err(EvaluationError::ArgumentTypeMismatch);
                             }
@@ -316,15 +410,32 @@ impl LispExpr {
                     LispExpr::Macro(LispMacro::Define) => unreachable!(),
                     // Function evaluation
                     _ => {
-                        // TODO: properly set tail and self call flags
+                        let is_self_call = if let LispExpr::OpVar(ref n) = head_expr {
+                            if let Some(self_name) = own_name {
+                                n == self_name
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        };
+
                         let finalized_args = expr_list
                             .into_iter()
-                            .map(|e| e.finalize(state))
+                            .map(|e| {
+                                e.finalize(scope_level, arguments, state, false, own_name)
+                            })
                             .collect::<EvaluationResult<Vec<_>>>()?;
                         FinalizedExpr::FunctionCall(
-                            Box::new(head_expr.finalize(state)?),
+                            Box::new(head_expr.finalize(
+                                scope_level,
+                                arguments,
+                                state,
+                                false,
+                                own_name,
+                            )?),
                             finalized_args,
-                            is_tail_call,
+                            can_tail_call,
                             is_self_call,
                         )
                     }
