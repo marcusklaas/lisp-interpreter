@@ -1,6 +1,7 @@
 #![cfg_attr(feature = "clippy", feature(plugin))]
 #![cfg_attr(feature = "clippy", plugin(clippy))]
-#![feature(test, splice, slice_patterns)]
+#![cfg_attr(test, feature(test))]
+#![feature(splice, slice_patterns)]
 
 extern crate petgraph;
 #[cfg(test)]
@@ -340,10 +341,10 @@ pub enum LispExpr {
 }
 
 impl LispExpr {
-    pub fn to_top_expr(self, state: &State) -> EvaluationResult<TopExpr> {
+    pub fn into_top_expr(self, state: &State) -> EvaluationResult<TopExpr> {
         if let LispExpr::Call(ref expr_list) = self {
             if let Some(&LispExpr::Macro(LispMacro::Define)) = expr_list.get(0) {
-                return if let &[LispExpr::OpVar(ref n), ref definition] = &expr_list[1..] {
+                return if let [LispExpr::OpVar(ref n), ref definition] = expr_list[1..] {
                     // FIXME: don't clone!
                     Ok(TopExpr::Define(n.clone(), definition.clone()))
                 } else {
@@ -456,7 +457,7 @@ impl LispExpr {
                             }
                         })
                     }
-                    // Defines should be caught by to_top_expr
+                    // Defines should be caught by into_top_expr
                     LispExpr::Macro(LispMacro::Define) => {
                         return Err(EvaluationError::MalformedDefinition)
                     }
@@ -620,7 +621,7 @@ mod tests {
     where
         I: IntoIterator<Item = &'i str>,
     {
-        let mut state = State::new();
+        let mut state = State::default();
         let mut last_ret_val = None;
 
         for cmd in commands {
@@ -1045,7 +1046,7 @@ mod tests {
 
     #[bench]
     fn bench_sort(b: &mut super::test::Bencher) {
-        let mut state = State::new();
+        let mut state = State::default();
 
         for cmd in SORT_COMMANDS {
             let expr = parse_lisp_string(cmd).unwrap();

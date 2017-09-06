@@ -212,7 +212,7 @@ fn add_custom_func<'m>(f: &CustomFunc, context: &'m mut Context) -> &'m Function
 fn eval_custom_func<'m, 'e: 'm>(
     val: &'e LispValue,
     self_node: NodeIndex,
-    arg_indices: Vec<NodeIndex>,
+    arg_indices: &[NodeIndex],
     tail_len: usize,
     context: &'m mut Context<'e>,
 ) -> Result<NodeIndex, SpecializationError> {
@@ -224,7 +224,7 @@ fn eval_custom_func<'m, 'e: 'm>(
                 if reference.ins.len() != tail_len {
                     return Err(SpecializationError::UnsupportedCurrying);
                 } else {
-                    for (&idx, &function_in) in arg_indices.iter().zip(reference.ins.iter()) {
+                    for (&idx, &function_in) in arg_indices.into_iter().zip(reference.ins.iter()) {
                         context.graph.add_edge(idx, function_in, NoLabel);
                     }
 
@@ -291,14 +291,14 @@ fn expand_graph<'m, 'e: 'm>(
                     context.graph.add_edge(self_node, main_ref.out, NoLabel);
                 }
                 FinalizedExpr::Value(ref val) => {
-                    return eval_custom_func(val, self_node, arg_indices, tail.len(), context);
+                    return eval_custom_func(val, self_node, &arg_indices, tail.len(), context);
                 }
                 FinalizedExpr::Variable(ref n) => {
                     if let Some(state_index) = context.state.get_index(n) {
                         return eval_custom_func(
                             &context.state[state_index],
                             self_node,
-                            arg_indices,
+                            &arg_indices,
                             tail.len(),
                             context,
                         );
