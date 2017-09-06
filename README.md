@@ -1,5 +1,7 @@
-# lisp-interpreter
+# lisp-interpreter 
 An bare bones lisp parser &amp; interpreter.
+
+[![Build Status](https://travis-ci.org/marcusklaas/lisp-interpreter.svg?branch=master2)](https://travis-ci.org/marcusklaas/lisp-interpreter)
 
 ## Features
 Parses and evaluates simple lisp-like statements. Its features include lambdas, closures and currying.
