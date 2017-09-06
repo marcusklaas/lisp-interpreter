@@ -1,6 +1,6 @@
 use super::{ArgType, BuiltIn, EvaluationError, EvaluationResult, FinalizedExpr, LispExpr,
             LispFunc, LispValue, TopExpr};
-//use super::specialization;
+use super::specialization;
 use std::collections::HashMap;
 use std::iter;
 use std::rc::Rc;
@@ -109,9 +109,7 @@ fn unitary_list<F: Fn(Vec<LispValue>) -> EvaluationResult<LispValue>>(
 ) -> EvaluationResult<()> {
     match stack.pop().unwrap() {
         LispValue::List(v) => Ok(stack.push(f(v)?)),
-        _ => {
-            Err(EvaluationError::ArgumentTypeMismatch)
-        }
+        _ => Err(EvaluationError::ArgumentTypeMismatch),
     }
 }
 
@@ -327,17 +325,17 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                         }
                         LispFunc::Custom(f) => {
                             // FIXME: DEBUGGING ONLY
-                            // let index = return_values.len() - arg_count;
-                            // let arg_types = return_values[index..]
-                            //     .iter()
-                            //     .map(LispValue::get_type)
-                            //     .collect::<Vec<_>>();
-                            // if specialization::can_specialize(&f, &arg_types, state) {
-                            //     // TODO: we can specialize! do something with it
-                            //     println!("specialization succeeded");
-                            // } else {
-                            //     println!("specialization failed");
-                            // }
+                            let index = return_values.len() - arg_count;
+                            let arg_types = return_values[index..]
+                                .iter()
+                                .map(LispValue::get_type)
+                                .collect::<Vec<_>>();
+                            if specialization::can_specialize(&f, &arg_types, state) {
+                                // TODO: we can specialize! do something with it
+                                println!("specialization succeeded");
+                            } else {
+                                println!("specialization failed");
+                            }
 
                             // Too many arguments or none at all.
                             if f.arg_count < arg_count || arg_count == 0 {

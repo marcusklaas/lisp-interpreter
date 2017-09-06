@@ -3,13 +3,13 @@
 #![feature(test, splice, slice_patterns)]
 
 extern crate petgraph;
+#[cfg(test)]
 extern crate test;
 
 pub mod parse;
 #[macro_use]
 pub mod evaluator;
-// TODO: make specialization compatible with FinalizedExpr
-// mod specialization;
+mod specialization;
 
 use std::fmt;
 use std::iter::repeat;
@@ -225,15 +225,19 @@ pub enum FinalizedExpr {
     // Arg count, scope level, body
     Lambda(usize, usize, Box<FinalizedExpr>),
     // test expr, true branch, false branch
-    // FIXME: don't do three boxes, but a single box containing triple
     Cond(Box<(FinalizedExpr, FinalizedExpr, FinalizedExpr)>),
     Variable(String),
     Value(LispValue),
     // Offset from stack pointer, scope level, moveable
     Argument(usize, usize, bool),
     // function, arguments, tail-call, self-call
-    // FIXME: don't do double box? or do?
     FunctionCall(Box<FinalizedExpr>, Vec<FinalizedExpr>, bool, bool),
+}
+
+impl fmt::Display for FinalizedExpr {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.pretty_print(0))
+    }
 }
 
 impl FinalizedExpr {

@@ -1,4 +1,4 @@
-use super::{ArgType, BuiltIn, CustomFunc, LispExpr, LispFunc, LispMacro, LispValue};
+use super::{ArgType, BuiltIn, CustomFunc, FinalizedExpr, LispFunc, LispValue};
 use super::evaluator::State;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -16,11 +16,8 @@ enum SpecializationError {
     UnsupportedBuiltIn,
     UnsupportedMacro,
     UnsupportedFunctionArgument,
-    BadCondition,
     BadRecursion,
     UndefinedVariable,
-    EmptyCall,
-    UnexpectedMacro,
 }
 
 #[derive(Clone)]
@@ -32,7 +29,7 @@ struct FunctionReference {
 // TODO: rename this to node or something
 #[derive(Debug)]
 enum GeneralizedExpr<'e> {
-    Expr(&'e LispExpr),
+    Expr(&'e FinalizedExpr),
     LabelNode(String),
     Ty(ArgType),
 }
@@ -40,7 +37,7 @@ enum GeneralizedExpr<'e> {
 impl<'e> fmt::Display for GeneralizedExpr<'e> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            GeneralizedExpr::Expr(ref e) => e.fmt(f),
+            GeneralizedExpr::Expr(e) => e.fmt(f),
             GeneralizedExpr::LabelNode(ref s) => write!(f, "{}", s),
             GeneralizedExpr::Ty(ty) => write!(f, "{:?}", ty),
         }
@@ -252,57 +249,52 @@ fn eval_custom_func<'m, 'e: 'm>(
 }
 
 fn expand_graph<'m, 'e: 'm>(
-    expr: &'e LispExpr,
+    expr: &'e FinalizedExpr,
     main_ref: &FunctionReference,
     context: &'m mut Context<'e>,
 ) -> Result<NodeIndex, SpecializationError> {
     match *expr {
-        LispExpr::Argument(index, _c) => Ok(main_ref.ins[index]),
-        LispExpr::Call(ref arg_vec, _is_tail_call, is_self_call) => {
+        // TODO: do something with scope?
+        FinalizedExpr::Argument(index, _scope, _c) => Ok(main_ref.ins[index]),
+        FinalizedExpr::Cond(ref triple) => {
+            let self_node = context.graph.add_node(GeneralizedExpr::Expr(expr));
+            let (ref test, ref true_expr, ref false_expr) = **triple;
+
+            let node = expand_graph(test, main_ref, context)?;
+            context.graph.add_edge(node, context.bool_index, NoLabel);
+            let node = expand_graph(true_expr, main_ref, context)?;
+            context.graph.add_edge(node, self_node, NoLabel);
+            let node = expand_graph(false_expr, main_ref, context)?;
+            context.graph.add_edge(node, self_node, NoLabel);
+            Ok(self_node)
+        }
+        // Do not bother with definitions/ lambdas (for now)
+        FinalizedExpr::Lambda(..) => Err(SpecializationError::UnsupportedMacro),
+        FinalizedExpr::FunctionCall(ref head, ref tail, _is_tail_call, is_self_call) => {
             let self_node = context.graph.add_node(GeneralizedExpr::Expr(expr));
 
-            if let [ref head, ref tail..] = arg_vec[..] {
-                let arg_indices = tail.iter()
-                    .map(|arg_expr| expand_graph(arg_expr, main_ref, context))
-                    .collect::<Result<Vec<_>, _>>()?;
+            let arg_indices = tail.iter()
+                .map(|arg_expr| expand_graph(arg_expr, main_ref, context))
+                .collect::<Result<Vec<_>, _>>()?;
 
-                match *head {
-                    // Recursion
-                    _ if is_self_call => {
-                        if arg_indices.len() != main_ref.ins.len() {
-                            return Err(SpecializationError::BadRecursion);
-                        }
-
-                        for (&top_node, &arg_node) in main_ref.ins.iter().zip(arg_indices.iter()) {
-                            context.graph.add_edge(top_node, arg_node, NoLabel);
-                        }
-
-                        context.graph.add_edge(self_node, main_ref.out, NoLabel);
+            match **head {
+                // Recursion
+                _ if is_self_call => {
+                    if arg_indices.len() != main_ref.ins.len() {
+                        return Err(SpecializationError::BadRecursion);
                     }
-                    LispExpr::Macro(m) => {
-                        match m {
-                            LispMacro::Cond => {
-                                if tail.len() != 3 {
-                                    return Err(SpecializationError::BadCondition);
-                                }
 
-                                context
-                                    .graph
-                                    .add_edge(arg_indices[0], context.bool_index, NoLabel);
-                                context.graph.add_edge(self_node, arg_indices[1], NoLabel);
-                                context.graph.add_edge(self_node, arg_indices[2], NoLabel);
-                            }
-                            // Do not bother with definitions/ lambdas (for now)
-                            LispMacro::Define | LispMacro::Lambda => {
-                                return Err(SpecializationError::UnsupportedMacro)
-                            }
-                        }
+                    for (&top_node, &arg_node) in main_ref.ins.iter().zip(arg_indices.iter()) {
+                        context.graph.add_edge(top_node, arg_node, NoLabel);
                     }
-                    LispExpr::Value(ref val) => {
-                        return eval_custom_func(val, self_node, arg_indices, tail.len(), context);
-                    }
-                    LispExpr::OpVar(ref n) => if let Some(state_index) = context.state.get_index(n)
-                    {
+
+                    context.graph.add_edge(self_node, main_ref.out, NoLabel);
+                }
+                FinalizedExpr::Value(ref val) => {
+                    return eval_custom_func(val, self_node, arg_indices, tail.len(), context);
+                }
+                FinalizedExpr::Variable(ref n) => {
+                    if let Some(state_index) = context.state.get_index(n) {
                         return eval_custom_func(
                             &context.state[state_index],
                             self_node,
@@ -312,20 +304,18 @@ fn expand_graph<'m, 'e: 'm>(
                         );
                     } else {
                         return Err(SpecializationError::UndefinedVariable);
-                    },
-                    _ => {
-                        // TODO: implement this at some point
-                        // this is used in ((lambda (f x) (f x)) add1 10)
-                        return Err(SpecializationError::UnsupportedFunctionArgument);
                     }
                 }
-            } else {
-                return Err(SpecializationError::EmptyCall);
+                _ => {
+                    // TODO: implement this at some point
+                    // this is used in ((lambda (f x) (f x)) add1 10)
+                    return Err(SpecializationError::UnsupportedFunctionArgument);
+                }
             }
 
             Ok(self_node)
         }
-        LispExpr::Value(ref val) => {
+        FinalizedExpr::Value(ref val) => {
             let general_expr: GeneralizedExpr = GeneralizedExpr::Expr(expr);
             let self_node = context.graph.add_node(general_expr);
 
@@ -356,7 +346,6 @@ fn expand_graph<'m, 'e: 'm>(
         }
         // All references should be resolved at this point, right?
         // No, not per se.
-        LispExpr::OpVar(..) => unreachable!(),
-        LispExpr::Macro(_) => return Err(SpecializationError::UnexpectedMacro),
+        FinalizedExpr::Variable(..) => unreachable!(),
     }
 }
