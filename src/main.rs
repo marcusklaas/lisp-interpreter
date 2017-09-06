@@ -33,7 +33,7 @@ fn exec_command(s: &str, state: &mut State) {
         Ok(expr) => match yalp::evaluator::eval(expr, state) {
             Ok(val) => {
                 println!("{}", &val);
-                state.set_variable(":last", val);
+                state.set_variable(":last".into(), val, true).unwrap();
             }
             Err(eval_err) => println!("Evaluation error: {:?}", eval_err),
         },
