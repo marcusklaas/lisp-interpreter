@@ -1,0 +1,8 @@
+before_install:
+  - sudo apt-get -qq update
+language: rust
+rust:
+  - nightly
+script:
+  - cargo build
+  - cargo test
