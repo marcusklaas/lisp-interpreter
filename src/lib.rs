@@ -457,7 +457,9 @@ impl LispExpr {
                         })
                     }
                     // Defines should be caught by to_top_expr
-                    LispExpr::Macro(LispMacro::Define) => unreachable!(),
+                    LispExpr::Macro(LispMacro::Define) => {
+                        return Err(EvaluationError::MalformedDefinition)
+                    }
                     // Function evaluation
                     _ => {
                         let is_self_call = if let LispExpr::OpVar(ref n) = head_expr {
@@ -765,7 +767,10 @@ mod tests {
 
     #[test]
     fn variable_overwrite() {
-        check_lisp_ok(vec!["(define x 1)", "(define x 1000)", "(add1 x)"], "1001");
+        check_lisp_err(
+            vec!["(define x 1)", "(define x 1000)", "(add1 x)"],
+            LispError::Evaluation(EvaluationError::BadDefine),
+        );
     }
 
     #[test]
@@ -848,6 +853,14 @@ mod tests {
         check_lisp_err(
             vec!["(add1)"],
             LispError::Evaluation(EvaluationError::ArgumentCountMismatch),
+        );
+    }
+
+    #[test]
+    fn lower_level_define() {
+        check_lisp_err(
+            vec!["(list (define x 5))"],
+            LispError::Evaluation(EvaluationError::MalformedDefinition),
         );
     }
 

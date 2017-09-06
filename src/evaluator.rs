@@ -41,12 +41,28 @@ impl State {
         self.index_map.get(var_name).map(|&i| StateIndex(i))
     }
 
-    // FIXME: this does not overwrite the old index in the store
-    // when it already was there
-    pub fn set_variable(&mut self, var_name: &str, val: LispValue) {
-        let index = self.store.len();
-        self.index_map.insert(var_name.into(), index);
-        self.store.push(val);
+    pub fn set_variable(
+        &mut self,
+        var_name: String,
+        val: LispValue,
+        allow_override: bool,
+    ) -> EvaluationResult<()> {
+        let entry = self.index_map.entry(var_name);
+
+        if let ::std::collections::hash_map::Entry::Occupied(occ_entry) = entry {
+            if !allow_override {
+                return Err(EvaluationError::BadDefine);
+            } else {
+                let index = *occ_entry.get();
+                self.store[index] = val;
+            }
+        } else {
+            let index = self.store.len();
+            entry.or_insert(index);
+            self.store.push(val);
+        }
+
+        Ok(())
     }
 }
 
@@ -308,7 +324,7 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                 return_values.push(state[i].clone());
             }
             Instr::PopAndSet(ref var_name) => {
-                state.set_variable(var_name, return_values.pop().unwrap());
+                state.set_variable(var_name.clone(), return_values.pop().unwrap(), false)?;
                 return_values.push(LispValue::List(Vec::new()));
             }
             // Pops a function off the value stack and applies it
