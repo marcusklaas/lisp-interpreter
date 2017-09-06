@@ -8,6 +8,7 @@ use std::cell::RefCell;
 use std::ops::Index;
 use std::mem::{swap, transmute};
 use std::ops::Deref;
+use std::default::Default;
 
 // TODO: ideally, this shouldn't be public - so
 // we can guarantee that no invalid indices can be
@@ -29,14 +30,16 @@ impl Index<StateIndex> for State {
     }
 }
 
-impl State {
-    pub fn new() -> State {
-        State {
+impl Default for State {
+    fn default() -> Self {
+        Self {
             index_map: HashMap::new(),
             store: Vec::new(),
         }
     }
+}
 
+impl State {
     pub fn get_index(&self, var_name: &str) -> Option<StateIndex> {
         self.index_map.get(var_name).map(|&i| StateIndex(i))
     }
@@ -112,7 +115,7 @@ fn unitary_int<F: Fn(u64) -> EvaluationResult<LispValue>>(
 ) -> EvaluationResult<()> {
     let reference = stack.last_mut().unwrap();
 
-    if let &mut LispValue::Integer(i) = reference {
+    if let LispValue::Integer(i) = *reference {
         Ok(*reference = f(i)?)
     } else {
         Err(EvaluationError::ArgumentTypeMismatch)
@@ -259,7 +262,7 @@ impl StackRef {
 }
 
 pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
-    let top_expr = expr.to_top_expr(state)?;
+    let top_expr = expr.into_top_expr(state)?;
     let mut return_values: Vec<LispValue> = Vec::new();
     let mut stax = vec![];
     let mut stack_ref = StackRef::new(Rc::new(RefCell::new(compile_top_expr(top_expr, state)?)), 0);

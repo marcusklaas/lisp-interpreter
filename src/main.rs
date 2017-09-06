@@ -45,7 +45,7 @@ fn exec_command(s: &str, state: &mut State) {
 
 fn main() {
     let mut rl = rustyline::Editor::<()>::new();
-    let mut state = State::new();
+    let mut state = State::default();
     let args = ::std::env::args().skip(1).collect::<Vec<String>>();
 
     if !args.contains(&"--no-prelude".to_owned()) {

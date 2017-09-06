@@ -60,7 +60,7 @@ impl<'a> Iterator for Tokens<'a> {
                 chars.next();
             }
 
-            Token::Integer(num as u64)
+            Token::Integer(u64::from(num))
         }
 
         while let Some(c) = self.chars.next() {
@@ -87,7 +87,7 @@ pub fn parse_lisp_string(lit: &str) -> Result<LispExpr, ParseError> {
     let result = parse_lisp(&mut tokens);
 
     match tokens.next() {
-        None => result.map(|expr_vec| LispExpr::Call(expr_vec)),
+        None => result.map(LispExpr::Call),
         Some(_) => Err(ParseError::UnbalancedParens),
     }
 }
