@@ -290,7 +290,7 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                 // creating the lambda.
                 // This enables us to do closures.
                 let walked_body =
-                    body.replace_args(scope, &return_values[stack_ref.stack_pointer..]);
+                    body.replace_args(scope, &mut return_values[stack_ref.stack_pointer..]);
                 let f = LispFunc::new_custom(arg_count, walked_body);
 
                 return_values.push(LispValue::Function(f));

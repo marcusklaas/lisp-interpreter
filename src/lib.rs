@@ -12,7 +12,7 @@ pub mod parse;
 pub mod evaluator;
 mod specialization;
 
-use std::mem::{transmute, transmute_copy};
+use std::mem::{swap, transmute_copy};
 use std::fmt;
 use std::iter::repeat;
 use std::rc::Rc;
@@ -35,16 +35,14 @@ pub struct CustomFunc(Rc<InnerCustomFunc>);
 
 impl Hash for CustomFunc {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        let ptr = unsafe { transmute_copy::<Rc<_>, usize>(&self.0) };
+        let ptr = unsafe { transmute_copy(&self.0) };
         state.write_usize(ptr);
     }
 }
 
 impl PartialEq for CustomFunc {
     fn eq(&self, other: &CustomFunc) -> bool {
-        unsafe {
-            transmute_copy::<Rc<_>, usize>(&self.0) == transmute_copy::<Rc<_>, usize>(&other.0)
-        }
+        unsafe { transmute_copy::<_, usize>(&self.0) == transmute_copy(&other.0) }
     }
 }
 
@@ -55,11 +53,11 @@ impl CustomFunc {
         unsafe {
             let borrowed = self.0.byte_code.get().as_ref().unwrap();
             if !borrowed.is_empty() {
-                Ok(transmute(&borrowed[..]))
+                Ok(&borrowed[..])
             } else {
                 let mut_borrowed = self.0.byte_code.get().as_mut().unwrap();
                 *mut_borrowed = compile_finalized_expr(self.0.body.clone(), state)?;
-                Ok(transmute(&mut_borrowed[..]))
+                Ok(&mut_borrowed[..])
             }
         }
     }
@@ -177,16 +175,14 @@ impl LispFunc {
         let funk = Box::new(FinalizedExpr::Value(
             LispValue::Function(LispFunc::Custom(f)),
         ));
-        let mut arg_vec: Vec<_> = stack[..supplied_args]
+        let arg_vec = stack[..supplied_args]
             .iter()
             .cloned()
             .map(FinalizedExpr::Value)
-            .collect();
-        arg_vec.extend(
             // TODO: check that we can get away with just setting scope to 0
             // or whether we need to be more clever
-            (0..total_args - supplied_args).map(|o| FinalizedExpr::Argument(o, 0, true)),
-        );
+            .chain((0..total_args - supplied_args).map(|o| FinalizedExpr::Argument(o, 0, true)))
+            .collect();
 
         Self::new_custom(
             arg_count,
@@ -259,11 +255,16 @@ impl fmt::Display for FinalizedExpr {
 
 impl FinalizedExpr {
     // Resolves references to function arguments. Used when creating closures.
-    pub fn replace_args(&self, scope_level: usize, stack: &[LispValue]) -> FinalizedExpr {
+    pub fn replace_args(&self, scope_level: usize, stack: &mut [LispValue]) -> FinalizedExpr {
         match *self {
-            FinalizedExpr::Argument(index, arg_scope, _is_move) if arg_scope < scope_level => {
-                // TODO: we could actually do a move here!
-                FinalizedExpr::Value(stack[index].clone())
+            FinalizedExpr::Argument(index, arg_scope, is_move) if arg_scope < scope_level => {
+                if is_move {
+                    let mut dummy = LispValue::Boolean(false);
+                    swap(&mut dummy, &mut stack[index]);
+                    FinalizedExpr::Value(dummy)
+                } else {
+                    FinalizedExpr::Value(stack[index].clone())
+                }
             }
             FinalizedExpr::FunctionCall(ref head, ref vec, is_tail_call, is_self_call) => {
                 FinalizedExpr::FunctionCall(
@@ -370,7 +371,7 @@ impl LispExpr {
             match self {
                 LispExpr::Call(expr_list) => {
                     let mut call_iter = expr_list.into_iter();
-                    destructure!(call_iter, [mac, opvar, definition], {
+                    destructure!(call_iter, [_mac, opvar, definition], {
                         if let LispExpr::OpVar(n) = opvar {
                             Ok(TopExpr::Define(n, definition))
                         } else {
@@ -805,6 +806,14 @@ mod tests {
         check_lisp_err(
             vec!["(define x 1)", "(define x 1000)", "(add1 x)"],
             LispError::Evaluation(EvaluationError::BadDefine),
+        );
+    }
+
+    #[test]
+    fn eval_empty_call() {
+        check_lisp_err(
+            vec!["()"],
+            LispError::Evaluation(EvaluationError::EmptyListEvaluation),
         );
     }
 
