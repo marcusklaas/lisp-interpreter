@@ -131,7 +131,7 @@ fn make_specialization_graph<'e>(
         }
     }
 
-    let res = expand_graph(&(*f.body), &main_ref, &mut context)?;
+    let res = expand_graph(&f.0.body, &main_ref, &mut context)?;
     context.graph.add_edge(res, main_ref.out, NoLabel);
 
     // println!(
@@ -185,7 +185,7 @@ fn create_ref_map(
 }
 
 fn add_custom_func<'m>(f: &CustomFunc, context: &'m mut Context) -> &'m FunctionReference {
-    let arg_nodes = (0..f.arg_count)
+    let arg_nodes = (0..f.0.arg_count)
         .map(|i| {
             context
                 .graph
@@ -236,7 +236,7 @@ fn eval_custom_func<'m, 'e: 'm>(
             if let LispFunc::Custom(ref custom_func) = *f {
                 let new_ref = add_custom_func(custom_func, context).clone();
 
-                expand_graph(&(*custom_func.body), &new_ref, context)?;
+                expand_graph(&custom_func.0.body, &new_ref, context)?;
 
                 context.graph.add_edge(self_node, new_ref.out, NoLabel);
                 Ok(self_node)

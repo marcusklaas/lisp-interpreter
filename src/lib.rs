@@ -12,54 +12,71 @@ pub mod parse;
 pub mod evaluator;
 mod specialization;
 
+use std::mem::{transmute, transmute_copy};
 use std::fmt;
 use std::iter::repeat;
 use std::rc::Rc;
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, UnsafeCell};
 use std::hash::{Hash, Hasher};
 use std::collections::HashMap;
 use evaluator::{compile_finalized_expr, Instr, State};
 
 type EvaluationResult<T> = Result<T, EvaluationError>;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CustomFunc {
+#[derive(Debug)]
+pub struct InnerCustomFunc {
     arg_count: usize,
-    body: Rc<FinalizedExpr>,
-    byte_code: Rc<RefCell<Vec<Instr>>>,
+    body: FinalizedExpr,
+    byte_code: UnsafeCell<Vec<Instr>>,
 }
+
+#[derive(Debug, Clone)]
+pub struct CustomFunc(Rc<InnerCustomFunc>);
 
 impl Hash for CustomFunc {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        // TODO: check that this is right - are we not leaking memory?
-        let ptr = Rc::into_raw(self.body.clone());
-        state.write_usize(ptr as usize);
+        let ptr = unsafe { transmute_copy::<Rc<_>, usize>(&self.0) };
+        state.write_usize(ptr);
+    }
+}
+
+impl PartialEq for CustomFunc {
+    fn eq(&self, other: &CustomFunc) -> bool {
         unsafe {
-            Rc::from_raw(ptr);
+            transmute_copy::<Rc<_>, usize>(&self.0) == transmute_copy::<Rc<_>, usize>(&other.0)
         }
     }
 }
 
+impl Eq for CustomFunc {}
+
 impl CustomFunc {
-    // FIXME: do a pass reducing the number of clones and stuff
-    // TODO: there's a lot of unnecessary checks with refcells
-    // also, lot's of indirection. see if we can introduce a new type
-    // that makes this more efficient
-    pub fn compile(&self, state: &State) -> EvaluationResult<Rc<RefCell<Vec<Instr>>>> {
-        {
-            if !self.byte_code.borrow().is_empty() {
-                return Ok(self.byte_code.clone());
+    pub fn compile<'s>(&'s self, state: &State) -> EvaluationResult<&'s [Instr]> {
+        unsafe {
+            let borrowed = self.0.byte_code.get().as_ref().unwrap();
+            if !borrowed.is_empty() {
+                Ok(transmute(&borrowed[..]))
+            } else {
+                let mut_borrowed = self.0.byte_code.get().as_mut().unwrap();
+                *mut_borrowed = compile_finalized_expr(self.0.body.clone(), state)?;
+                Ok(transmute(&mut_borrowed[..]))
             }
         }
+    }
 
-        *self.byte_code.borrow_mut() = compile_finalized_expr((*self.body).clone(), state)?;
-        Ok(self.byte_code.clone())
+    pub fn from_byte_code(arg_count: usize, bytecode: Vec<Instr>) -> Self {
+        CustomFunc(Rc::new(InnerCustomFunc {
+            arg_count: arg_count,
+            // dummy
+            body: FinalizedExpr::Value(LispValue::Boolean(false)),
+            byte_code: UnsafeCell::new(bytecode),
+        }))
     }
 
     pub fn pretty_print(&self, indent: usize) -> String {
         let mut result = String::new();
 
-        for i in 0..self.arg_count {
+        for i in 0..self.0.arg_count {
             if i > 0 {
                 result.push(' ');
             }
@@ -67,7 +84,7 @@ impl CustomFunc {
         }
 
         result.push_str(&format!(" ->\n{}", indent_to_string(indent + 1)));
-        result + &self.body.pretty_print(indent + 1)
+        result + &self.0.body.pretty_print(indent + 1)
     }
 }
 
@@ -143,11 +160,11 @@ pub enum LispFunc {
 
 impl LispFunc {
     pub fn new_custom(arg_count: usize, body: FinalizedExpr) -> LispFunc {
-        LispFunc::Custom(CustomFunc {
+        LispFunc::Custom(CustomFunc(Rc::new(InnerCustomFunc {
             arg_count: arg_count,
-            body: Rc::new(body),
-            byte_code: Rc::new(RefCell::new(Vec::new())),
-        })
+            body: body,
+            byte_code: UnsafeCell::new(Vec::new()),
+        })))
     }
 
     pub fn create_continuation(
@@ -171,11 +188,10 @@ impl LispFunc {
             (0..total_args - supplied_args).map(|o| FinalizedExpr::Argument(o, 0, true)),
         );
 
-        LispFunc::Custom(CustomFunc {
-            arg_count: arg_count,
-            body: Rc::new(FinalizedExpr::FunctionCall(funk, arg_vec, true, false)),
-            byte_code: Rc::new(RefCell::new(Vec::new())),
-        })
+        Self::new_custom(
+            arg_count,
+            FinalizedExpr::FunctionCall(funk, arg_vec, true, false),
+        )
     }
 
     pub fn pretty_print(&self, indent: usize) -> String {
@@ -669,7 +685,7 @@ mod tests {
                         Instr::CheckZero,
                         Instr::CloneArgument(1),
                     ],
-                    f.byte_code.borrow().clone()
+                    unsafe { f.0.byte_code.get().as_ref().unwrap().clone() }
                 );
             }
             _ => panic!("expected function!"),

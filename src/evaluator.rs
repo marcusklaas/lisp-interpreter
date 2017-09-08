@@ -1,13 +1,11 @@
-use super::{ArgType, BuiltIn, EvaluationError, EvaluationResult, FinalizedExpr, LispExpr,
-            LispFunc, LispValue, TopExpr};
+use super::{ArgType, BuiltIn, CustomFunc, EvaluationError, EvaluationResult, FinalizedExpr,
+            LispExpr, LispFunc, LispValue, TopExpr};
 use super::specialization;
+use std::collections::hash_map;
 use std::collections::HashMap;
 use std::iter;
-use std::rc::Rc;
-use std::cell::RefCell;
 use std::ops::Index;
 use std::mem::{swap, transmute};
-use std::ops::Deref;
 use std::default::Default;
 
 // TODO: ideally, this shouldn't be public - so
@@ -52,7 +50,7 @@ impl State {
     ) -> EvaluationResult<()> {
         let entry = self.index_map.entry(var_name);
 
-        if let ::std::collections::hash_map::Entry::Occupied(occ_entry) = entry {
+        if let hash_map::Entry::Occupied(occ_entry) = entry {
             if !allow_override {
                 return Err(EvaluationError::BadDefine);
             } else {
@@ -153,13 +151,8 @@ macro_rules! destructure {
 fn compile_top_expr(expr: TopExpr, state: &State) -> EvaluationResult<Vec<Instr>> {
     match expr {
         TopExpr::Define(name, sub_expr) => {
-            let finalized_definition = sub_expr.finalize(
-                0,
-                &::std::collections::HashMap::new(),
-                state,
-                true,
-                Some(&name),
-            )?;
+            let finalized_definition =
+                sub_expr.finalize(0, &HashMap::new(), state, true, Some(&name))?;
             let mut instructions = vec![Instr::PopAndSet(name)];
             instructions.extend(compile_finalized_expr(finalized_definition, state)?);
             Ok(instructions)
@@ -240,7 +233,7 @@ fn builtin_instr(f: BuiltIn, arg_count: usize) -> EvaluationResult<Instr> {
 
 struct StackRef {
     instr_pointer: usize,
-    #[allow(dead_code)] instr_vec: Rc<RefCell<Vec<Instr>>>,
+    #[allow(dead_code)] func: CustomFunc,
     stack_pointer: usize,
     // This reference isn't really static - it refers to vector inside of
     // instr_vec. There's just no way to express this in Rust (I think!)
@@ -248,24 +241,27 @@ struct StackRef {
 }
 
 impl StackRef {
-    fn new(next_instr_vec: Rc<RefCell<Vec<Instr>>>, stack_pointer: usize) -> StackRef {
-        let instr_len = { next_instr_vec.borrow().len() };
-        let reference = unsafe { transmute(&next_instr_vec.borrow().deref()[..]) };
+    fn new(func: CustomFunc, stack_pointer: usize, state: &State) -> EvaluationResult<StackRef> {
+        let reference = unsafe { transmute(func.compile(state)?) };
 
-        StackRef {
+        Ok(StackRef {
             instr_slice: reference,
-            instr_pointer: instr_len,
-            instr_vec: next_instr_vec,
+            instr_pointer: reference.len(),
+            func: func,
             stack_pointer: stack_pointer,
-        }
+        })
     }
 }
 
 pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
-    let top_expr = expr.into_top_expr(state)?;
     let mut return_values: Vec<LispValue> = Vec::new();
     let mut stax = vec![];
-    let mut stack_ref = StackRef::new(Rc::new(RefCell::new(compile_top_expr(top_expr, state)?)), 0);
+    let mut stack_ref = {
+        let top_expr = expr.into_top_expr(state)?;
+        let instructions = compile_top_expr(top_expr, state)?;
+        let main_func = CustomFunc::from_byte_code(0, instructions);
+        StackRef::new(main_func, 0, state)?
+    };
 
     'l: loop {
         // Pop stack frame when there's no more instructions in this one
@@ -338,9 +334,12 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                             // The performance of this solution is basically horrendous,
                             // but all the performant solutions are super messy.
                             // This shouldn't occur too often, though.
-                            let instr_vec =
-                                Rc::new(RefCell::new(vec![builtin_instr(b, arg_count)?]));
-                            update_stacks = Some((instr_vec, arg_count, true));
+                            let func = CustomFunc::from_byte_code(
+                                arg_count,
+                                vec![builtin_instr(b, arg_count)?],
+                            );
+
+                            update_stacks = Some((func, true));
                         }
                         LispFunc::Custom(f) => {
                             // FIXME: DEBUGGING ONLY
@@ -356,18 +355,19 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                                 println!("specialization failed");
                             }
 
+                            let func_arg_count = f.0.arg_count;
+
                             // Too many arguments or none at all.
-                            if f.arg_count < arg_count || arg_count == 0 {
+                            if func_arg_count < arg_count || arg_count == 0 {
                                 return Err(EvaluationError::ArgumentCountMismatch);
                             }
                             // Not enough arguments, let's create a lambda that takes
                             // the remainder.
-                            else if arg_count < f.arg_count {
+                            else if arg_count < func_arg_count {
                                 let temp_stack = return_values.len() - arg_count;
-                                let f_arg_count = f.arg_count;
                                 let continuation = LispFunc::create_continuation(
                                     f,
-                                    f_arg_count,
+                                    func_arg_count,
                                     arg_count,
                                     &return_values[temp_stack..],
                                 );
@@ -382,9 +382,9 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                                 return_values
                                     .splice(stack_ref.stack_pointer..top_index, iter::empty());
 
-                                update_stacks = Some((f.compile(state)?, arg_count, false));
+                                update_stacks = Some((f, false));
                             } else {
-                                update_stacks = Some((f.compile(state)?, arg_count, true));
+                                update_stacks = Some((f, true));
                             }
                         }
                     }
@@ -431,8 +431,10 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
 
         // This solution is not very elegant, but it's necessary
         // to please the borrowchecker in a safe manner.
-        if let Some((next_instr_vec, arg_count, push_stack)) = update_stacks {
-            let mut next_stack_ref = StackRef::new(next_instr_vec, return_values.len() - arg_count);
+        if let Some((next_func, push_stack)) = update_stacks {
+            let next_arg_count = next_func.0.arg_count;
+            let mut next_stack_ref =
+                StackRef::new(next_func, return_values.len() - next_arg_count, state)?;
             swap(&mut next_stack_ref, &mut stack_ref);
 
             if push_stack {
