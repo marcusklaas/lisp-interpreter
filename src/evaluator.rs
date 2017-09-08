@@ -134,11 +134,10 @@ fn unitary_list<F: Fn(Vec<LispValue>) -> EvaluationResult<LispValue>>(
 macro_rules! destructure {
     ( $y:ident, $x:expr ) => {{$x}};
 
-    ( $y:ident, [ $( $i:ident ),* ], $body:expr ) => {
+    ( $iter:ident, [ $( $i:ident ),* ], $body:expr ) => {
         {
             if let ($( Some( $i), )* None) = {
-                let mut iter = $y.into_iter();
-                ( $( destructure!($i, iter.next()), )* iter.next() )
+                ( $( destructure!($i, $iter.next()), )* $iter.next() )
             } {
                 Ok($body)
             } else {
@@ -342,18 +341,18 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                             update_stacks = Some((func, true));
                         }
                         LispFunc::Custom(f) => {
-                            // FIXME: DEBUGGING ONLY
-                            let index = return_values.len() - arg_count;
-                            let arg_types = return_values[index..]
-                                .iter()
-                                .map(LispValue::get_type)
-                                .collect::<Vec<_>>();
-                            if specialization::can_specialize(&f, &arg_types, state) {
-                                // TODO: we can specialize! do something with it
-                                println!("specialization succeeded");
-                            } else {
-                                println!("specialization failed");
-                            }
+                            // // FIXME: DEBUGGING ONLY
+                            // let index = return_values.len() - arg_count;
+                            // let arg_types = return_values[index..]
+                            //     .iter()
+                            //     .map(LispValue::get_type)
+                            //     .collect::<Vec<_>>();
+                            // if specialization::can_specialize(&f, &arg_types, state) {
+                            //     // TODO: we can specialize! do something with it
+                            //     println!("specialization succeeded");
+                            // } else {
+                            //     println!("specialization failed");
+                            // }
 
                             let func_arg_count = f.0.arg_count;
 

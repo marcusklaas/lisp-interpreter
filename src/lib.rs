@@ -262,6 +262,7 @@ impl FinalizedExpr {
     pub fn replace_args(&self, scope_level: usize, stack: &[LispValue]) -> FinalizedExpr {
         match *self {
             FinalizedExpr::Argument(index, arg_scope, _is_move) if arg_scope < scope_level => {
+                // TODO: we could actually do a move here!
                 FinalizedExpr::Value(stack[index].clone())
             }
             FinalizedExpr::FunctionCall(ref head, ref vec, is_tail_call, is_self_call) => {
@@ -358,20 +359,32 @@ pub enum LispExpr {
 
 impl LispExpr {
     pub fn into_top_expr(self, state: &State) -> EvaluationResult<TopExpr> {
-        if let LispExpr::Call(ref expr_list) = self {
-            if let Some(&LispExpr::Macro(LispMacro::Define)) = expr_list.get(0) {
-                return if let [LispExpr::OpVar(ref n), ref definition] = expr_list[1..] {
-                    // FIXME: don't clone!
-                    Ok(TopExpr::Define(n.clone(), definition.clone()))
-                } else {
-                    Err(EvaluationError::BadDefine)
-                };
-            }
-        }
+        let is_define = if let &LispExpr::Call(ref expr_list) = &self {
+            Some(&LispExpr::Macro(LispMacro::Define)) == expr_list.get(0)
+        } else {
+            false
+        };
 
-        Ok(TopExpr::Regular(
-            self.finalize(0, &HashMap::new(), state, true, None)?,
-        ))
+        // This feels kind of clumsy
+        if is_define {
+            match self {
+                LispExpr::Call(expr_list) => {
+                    let mut call_iter = expr_list.into_iter();
+                    destructure!(call_iter, [mac, opvar, definition], {
+                        if let LispExpr::OpVar(n) = opvar {
+                            Ok(TopExpr::Define(n, definition))
+                        } else {
+                            Err(EvaluationError::BadDefine)
+                        }
+                    })
+                }
+                _ => unreachable!(),
+            }
+        } else {
+            Ok(TopExpr::Regular(
+                self.finalize(0, &HashMap::new(), state, true, None)?,
+            ))
+        }
     }
 
     // TODO: cleanup arguments. maybe pass around a context?
@@ -401,12 +414,17 @@ impl LispExpr {
             LispExpr::Macro(..) => {
                 return Err(EvaluationError::UnexpectedOperator);
             }
-            LispExpr::Call(mut expr_list) => {
-                let head_expr = expr_list.remove(0);
+            LispExpr::Call(expr_list) => {
+                // TODO: add test for empty calls
+                let mut expr_iter = expr_list.into_iter();
+                let head_expr = match expr_iter.next() {
+                    Some(head) => head,
+                    None => return Err(EvaluationError::EmptyListEvaluation),
+                };
 
                 match head_expr {
                     LispExpr::Macro(LispMacro::Cond) => {
-                        destructure!(expr_list, [test_expr, true_expr, false_expr], {
+                        destructure!(expr_iter, [test_expr, true_expr, false_expr], {
                             let false_expr_args = arguments.clone();
                             let finalized_false_expr = false_expr.finalize(
                                 scope_level,
@@ -437,7 +455,7 @@ impl LispExpr {
                         })
                     }
                     LispExpr::Macro(LispMacro::Lambda) => {
-                        destructure!(expr_list, [arg_list, body], {
+                        destructure!(expr_iter, [arg_list, body], {
                             if let LispExpr::Call(ref arg_vec) = arg_list {
                                 // Add arguments to the arguments map, overwriting existing
                                 // ones if they have the same symbol.
@@ -493,7 +511,7 @@ impl LispExpr {
                         // we get the argument moves correctly. The last arguments
                         // get to use the moves first.
                         let mut arg_finalized_expr = Vec::new();
-                        for e in expr_list.into_iter().rev() {
+                        for e in expr_iter.rev() {
                             let finalized =
                                 e.finalize(scope_level, arguments, state, false, own_name)?;
                             arg_finalized_expr.push(finalized);
