@@ -8,6 +8,11 @@ rustyline = "*"
 petgraph = "*"
 clippy = {version = "*", optional = true}
 
+[dependencies.string-interner]
+version = "*"
+default-features = false
+features = []
+
 [features]
 default = []
 

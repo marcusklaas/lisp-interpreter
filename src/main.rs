@@ -27,13 +27,14 @@ const PRELUDE: &'static [&'static str] = &[
 ];
 
 fn exec_command(s: &str, state: &mut State) {
-    let parse_result = parse_lisp_string(s);
+    let parse_result = parse_lisp_string(s, state);
+    let last_intern = state.intern(":last");
 
     match parse_result {
         Ok(expr) => match yalp::evaluator::eval(expr, state) {
             Ok(val) => {
-                println!("{}", &val);
-                state.set_variable(":last".into(), val, true).unwrap();
+                println!("{}", val.pretty_print(state, 0));
+                state.set_variable(last_intern, val, true).unwrap();
             }
             Err(eval_err) => println!("Evaluation error: {:?}", eval_err),
         },
@@ -50,7 +51,8 @@ fn main() {
 
     if !args.contains(&"--no-prelude".to_owned()) {
         for def in PRELUDE {
-            let parse_res = parse_lisp_string(def).expect("Prelude statement failed to parse!");
+            let parse_res =
+                parse_lisp_string(def, &mut state).expect("Prelude statement failed to parse!");
             yalp::evaluator::eval(parse_res, &mut state)
                 .expect("Prelude statement failed to execute!");
         }
