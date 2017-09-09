@@ -37,7 +37,7 @@ enum GeneralizedExpr<'e> {
 impl<'e> fmt::Display for GeneralizedExpr<'e> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            GeneralizedExpr::Expr(e) => e.fmt(f),
+            GeneralizedExpr::Expr(e) => write!(f, "{:?}", e),
             GeneralizedExpr::LabelNode(ref s) => write!(f, "{}", s),
             GeneralizedExpr::Ty(ty) => write!(f, "{:?}", ty),
         }
@@ -293,19 +293,18 @@ fn expand_graph<'m, 'e: 'm>(
                 FinalizedExpr::Value(ref val) => {
                     return eval_custom_func(val, self_node, &arg_indices, tail.len(), context);
                 }
-                FinalizedExpr::Variable(ref n) => {
-                    if let Some(state_index) = context.state.get_index(n) {
-                        return eval_custom_func(
-                            &context.state[state_index],
-                            self_node,
-                            &arg_indices,
-                            tail.len(),
-                            context,
-                        );
-                    } else {
-                        return Err(SpecializationError::UndefinedVariable);
-                    }
-                }
+                FinalizedExpr::Variable(n) => if let Some(state_index) = context.state.get_index(n)
+                {
+                    return eval_custom_func(
+                        &context.state[state_index],
+                        self_node,
+                        &arg_indices,
+                        tail.len(),
+                        context,
+                    );
+                } else {
+                    return Err(SpecializationError::UndefinedVariable);
+                },
                 _ => {
                     // TODO: implement this at some point
                     // this is used in ((lambda (f x) (f x)) add1 10)

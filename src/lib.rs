@@ -4,6 +4,7 @@
 #![feature(splice, slice_patterns)]
 
 extern crate petgraph;
+extern crate string_interner;
 #[cfg(test)]
 extern crate test;
 
@@ -13,6 +14,7 @@ pub mod evaluator;
 mod specialization;
 
 use std::mem::{swap, transmute_copy};
+use std::convert::From;
 use std::fmt;
 use std::iter::repeat;
 use std::rc::Rc;
@@ -71,7 +73,7 @@ impl CustomFunc {
         }))
     }
 
-    pub fn pretty_print(&self, indent: usize) -> String {
+    pub fn pretty_print(&self, state: &State, indent: usize) -> String {
         let mut result = String::new();
 
         for i in 0..self.0.arg_count {
@@ -82,7 +84,7 @@ impl CustomFunc {
         }
 
         result.push_str(&format!(" ->\n{}", indent_to_string(indent + 1)));
-        result + &self.0.body.pretty_print(indent + 1)
+        result + &self.0.body.pretty_print(state, indent + 1)
     }
 }
 
@@ -190,22 +192,16 @@ impl LispFunc {
         )
     }
 
-    pub fn pretty_print(&self, indent: usize) -> String {
+    pub fn pretty_print(&self, state: &State, indent: usize) -> String {
         match *self {
             LispFunc::BuiltIn(name) => format!("{:?}", name),
-            LispFunc::Custom(ref c) => c.pretty_print(indent),
+            LispFunc::Custom(ref c) => c.pretty_print(state, indent),
         }
     }
 }
 
 fn indent_to_string(indent: usize) -> String {
     repeat(' ').take(indent * 4).collect()
-}
-
-impl fmt::Display for LispFunc {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.pretty_print(0))
-    }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -228,7 +224,7 @@ impl LispMacro {
 
 #[derive(Debug, Clone)]
 pub enum TopExpr {
-    Define(String, LispExpr),
+    Define(InternedString, LispExpr),
     Regular(FinalizedExpr),
 }
 
@@ -239,18 +235,12 @@ pub enum FinalizedExpr {
     Lambda(usize, usize, Box<FinalizedExpr>),
     // test expr, true branch, false branch
     Cond(Box<(FinalizedExpr, FinalizedExpr, FinalizedExpr)>),
-    Variable(String),
+    Variable(InternedString),
     Value(LispValue),
     // Offset from stack pointer, scope level, moveable
     Argument(usize, usize, bool),
     // function, arguments, tail-call, self-call
     FunctionCall(Box<FinalizedExpr>, Vec<FinalizedExpr>, bool, bool),
-}
-
-impl fmt::Display for FinalizedExpr {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.pretty_print(0))
-    }
 }
 
 impl FinalizedExpr {
@@ -293,20 +283,21 @@ impl FinalizedExpr {
         }
     }
 
-    pub fn pretty_print(&self, indent: usize) -> String {
+    pub fn pretty_print(&self, state: &State, indent: usize) -> String {
         match *self {
             FinalizedExpr::Argument(offset, scope, is_move) => {
                 format!("{}$({}, {})", if is_move { "m" } else { "" }, offset, scope)
             }
-            FinalizedExpr::Value(ref v) => v.pretty_print(indent),
-            FinalizedExpr::Variable(ref name) => name.clone(),
+            FinalizedExpr::Value(ref v) => v.pretty_print(state, indent),
+            FinalizedExpr::Variable(interned_name) => state.resolve_intern(interned_name).into(),
             FinalizedExpr::Cond(ref triple) => {
                 let (ref test, ref true_expr, ref false_expr) = **triple;
                 let expr_iter = Some(&*true_expr).into_iter().chain(Some(&*false_expr));
                 format_list(
+                    state,
                     indent,
                     "cond".to_owned(),
-                    &test.pretty_print(indent),
+                    &test.pretty_print(state, indent),
                     expr_iter,
                 )
             }
@@ -314,7 +305,7 @@ impl FinalizedExpr {
                 "lambda ({}, {}) -> {}",
                 arg_c,
                 scope,
-                body.pretty_print(indent)
+                body.pretty_print(state, indent)
             ),
             FinalizedExpr::FunctionCall(ref funk, ref args, is_tail_call, is_self_call) => {
                 let prefix = match (is_self_call, is_tail_call) {
@@ -323,13 +314,20 @@ impl FinalizedExpr {
                     (_, _) => String::new(),
                 };
 
-                format_list(indent, prefix, &funk.pretty_print(indent), args.iter())
+                format_list(
+                    state,
+                    indent,
+                    prefix,
+                    &funk.pretty_print(state, indent),
+                    args.iter(),
+                )
             }
         }
     }
 }
 
 fn format_list<'a, I: Iterator<Item = &'a FinalizedExpr>>(
+    state: &State,
     indent: usize,
     prefix: String,
     first_item: &str,
@@ -343,31 +341,46 @@ fn format_list<'a, I: Iterator<Item = &'a FinalizedExpr>>(
     for expr in expr_list {
         result.push('\n');
         result.push_str(&indent_to_string(indent));
-        result.push_str(&expr.pretty_print(indent));
+        result.push_str(&expr.pretty_print(state, indent));
     }
 
     result.push('}');
     result
 }
 
+#[derive(Debug, PartialEq, Eq, Hash, Copy, Clone, PartialOrd, Ord)]
+pub struct InternedString(u32);
+
+impl From<InternedString> for usize {
+    fn from(t: InternedString) -> Self {
+        t.0 as usize
+    }
+}
+
+impl From<usize> for InternedString {
+    fn from(t: usize) -> Self {
+        InternedString(t as u32)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LispExpr {
     Macro(LispMacro),
     Value(LispValue),
-    OpVar(String),
+    OpVar(InternedString),
     Call(Vec<LispExpr>),
 }
 
-pub struct FinalizationContext<'s> {
+pub struct FinalizationContext {
     scope_level: usize,
     // maps symbols to (scope_level, offset, moveable)
-    arguments: HashMap<String, (usize, usize, bool)>,
+    arguments: HashMap<InternedString, (usize, usize, bool)>,
     can_tail_call: bool,
-    own_name: Option<&'s str>,
+    own_name: Option<InternedString>,
 }
 
-impl<'s> FinalizationContext<'s> {
-    fn new(own_name: Option<&'s str>) -> FinalizationContext<'s> {
+impl FinalizationContext {
+    fn new(own_name: Option<InternedString>) -> FinalizationContext {
         FinalizationContext {
             scope_level: 0,
             arguments: HashMap::new(),
@@ -470,7 +483,7 @@ impl LispExpr {
 
                                 for (offset, expr) in arg_vec.into_iter().enumerate() {
                                     let symbol = match *expr {
-                                        LispExpr::OpVar(ref name) => Ok(&name[..]),
+                                        LispExpr::OpVar(intern) => Ok(intern),
                                         _ => Err(EvaluationError::MalformedDefinition),
                                     }?;
 
@@ -500,9 +513,9 @@ impl LispExpr {
                     }
                     // Function evaluation
                     _ => {
-                        let is_self_call = if let LispExpr::OpVar(ref n) = head_expr {
+                        let is_self_call = if let LispExpr::OpVar(intern) = head_expr {
                             if let Some(self_name) = ctx.own_name {
-                                n == self_name
+                                intern == self_name
                             } else {
                                 false
                             }
@@ -535,10 +548,10 @@ impl LispExpr {
         })
     }
 
-    pub fn pretty_print(&self, indent: usize) -> String {
+    pub fn pretty_print(&self, state: &State, indent: usize) -> String {
         match *self {
-            LispExpr::Value(ref v) => v.pretty_print(indent),
-            LispExpr::OpVar(ref name) => name.clone(),
+            LispExpr::Value(ref v) => v.pretty_print(state, indent),
+            LispExpr::OpVar(intern) => state.resolve_intern(intern).into(),
             LispExpr::Macro(ref mac) => format!("{:?}", mac),
             LispExpr::Call(ref expr_vec) => {
                 let mut result = String::new();
@@ -551,19 +564,13 @@ impl LispExpr {
                         result.push_str(&indent_to_string(indent));
                     }
 
-                    result.push_str(&expr.pretty_print(indent));
+                    result.push_str(&expr.pretty_print(state, indent));
                 }
 
                 result.push('}');
                 result
             }
         }
-    }
-}
-
-impl fmt::Display for LispExpr {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.pretty_print(0))
     }
 }
 
@@ -599,9 +606,9 @@ impl LispValue {
         }
     }
 
-    pub fn pretty_print(&self, indent: usize) -> String {
+    pub fn pretty_print(&self, state: &State, indent: usize) -> String {
         match *self {
-            LispValue::Function(ref func) => format!("[{}]", func.pretty_print(indent)),
+            LispValue::Function(ref func) => format!("[{}]", func.pretty_print(state, indent)),
             LispValue::Integer(i) => i.to_string(),
             LispValue::Boolean(true) => "#t".into(),
             LispValue::Boolean(false) => "#f".into(),
@@ -613,19 +620,13 @@ impl LispValue {
                         result.push(' ');
                     }
 
-                    result.push_str(&val.pretty_print(indent));
+                    result.push_str(&val.pretty_print(state, indent));
                 }
 
                 result.push(')');
                 result
             }
         }
-    }
-}
-
-impl fmt::Display for LispValue {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.pretty_print(0))
     }
 }
 
@@ -654,16 +655,15 @@ mod tests {
         }
     }
 
-    fn check_lisp<'i, I>(commands: I) -> Result<LispValue, LispError>
+    fn check_lisp<'i, I>(state: &mut State, commands: I) -> Result<LispValue, LispError>
     where
         I: IntoIterator<Item = &'i str>,
     {
-        let mut state = State::default();
         let mut last_ret_val = None;
 
         for cmd in commands {
-            let expr = parse_lisp_string(cmd)?;
-            last_ret_val = Some(evaluator::eval(expr, &mut state)?);
+            let expr = parse_lisp_string(cmd, state)?;
+            last_ret_val = Some(evaluator::eval(expr, state)?);
         }
 
         Ok(last_ret_val.unwrap())
@@ -673,23 +673,30 @@ mod tests {
     where
         I: IntoIterator<Item = &'i str>,
     {
-        assert_eq!(expected_out, check_lisp(commands).unwrap().to_string());
+        let mut state = State::default();
+        let val = check_lisp(&mut state, commands).unwrap();
+        assert_eq!(expected_out, val.pretty_print(&state, 0));
     }
 
     fn check_lisp_err<'i, I>(commands: I, expected_err: LispError)
     where
         I: IntoIterator<Item = &'i str>,
     {
-        assert_eq!(expected_err, check_lisp(commands).unwrap_err());
+        let mut state = State::default();
+        assert_eq!(expected_err, check_lisp(&mut state, commands).unwrap_err());
     }
 
     #[test]
     fn add_bytecode() {
-        let add = check_lisp(vec![
-            "(define add (lambda (x y) (cond (zero? y) x (add (add1 x) (sub1 y)))))",
-            "(add 0 0)",
-            "(car (list add))",
-        ]).unwrap();
+        let mut state = State::default();
+        let add = check_lisp(
+            &mut state,
+            vec![
+                "(define add (lambda (x y) (cond (zero? y) x (add (add1 x) (sub1 y)))))",
+                "(add 0 0)",
+                "(car (list add))",
+            ],
+        ).unwrap();
 
         match add {
             LispValue::Function(LispFunc::Custom(f)) => {
@@ -748,14 +755,16 @@ mod tests {
 
     #[test]
     fn display_int_val() {
+        let state = Default::default();
         let val = LispValue::Integer(5);
-        assert_eq!("5", val.to_string());
+        assert_eq!("5", val.pretty_print(&state, 0));
     }
 
     #[test]
     fn display_list_val() {
+        let state = Default::default();
         let val = LispValue::List(vec![LispValue::Integer(1), LispValue::List(vec![])]);
-        assert_eq!("(1 ())", val.to_string());
+        assert_eq!("(1 ())", val.pretty_print(&state, 0));
     }
 
     #[test]
@@ -1017,7 +1026,8 @@ mod tests {
 
     #[test]
     fn list_closure() {
-        assert!(check_lisp(vec!["(list add1 ((lambda (f x) (f x)) sub1))"]).is_ok());
+        let mut state = State::default();
+        assert!(check_lisp(&mut state, vec!["(list add1 ((lambda (f x) (f x)) sub1))"]).is_ok());
     }
 
     #[test]
@@ -1071,21 +1081,29 @@ mod tests {
     #[bench]
     fn bench_add(b: &mut super::test::Bencher) {
         b.iter(|| {
-            check_lisp(vec![
-                "(define add (lambda (x y) (cond (zero? y) x (add (add1 x) (sub1 y)))))",
-                "(add 100 100)",
-            ])
+            let mut state = State::default();
+            check_lisp(
+                &mut state,
+                vec![
+                    "(define add (lambda (x y) (cond (zero? y) x (add (add1 x) (sub1 y)))))",
+                    "(add 100 100)",
+                ],
+            )
         });
     }
 
     #[bench]
     fn bench_mult(b: &mut super::test::Bencher) {
         b.iter(|| {
-            check_lisp(vec![
-                "(define add (lambda (x y) (cond (zero? y) x (add (add1 x) (sub1 y)))))",
-                "(define mult (lambda (x y) (cond (zero? y) 0 (add (mult x (sub1 y)) x))))",
-                "(mult 10 100)",
-            ])
+            let mut state = State::default();
+            check_lisp(
+                &mut state,
+                vec![
+                    "(define add (lambda (x y) (cond (zero? y) x (add (add1 x) (sub1 y)))))",
+                    "(define mult (lambda (x y) (cond (zero? y) 0 (add (mult x (sub1 y)) x))))",
+                    "(mult 10 100)",
+                ],
+            )
         });
     }
 
@@ -1094,12 +1112,13 @@ mod tests {
         let mut state = State::default();
 
         for cmd in SORT_COMMANDS {
-            let expr = parse_lisp_string(cmd).unwrap();
+            let expr = parse_lisp_string(cmd, &mut state).unwrap();
             evaluator::eval(expr, &mut state).unwrap();
         }
 
         b.iter(|| {
-            let expr = parse_lisp_string("(sort (list 5 1 0 3 2 10 30 0 7 1))").unwrap();
+            let expr =
+                parse_lisp_string("(sort (list 5 1 0 3 2 10 30 0 7 1))", &mut state).unwrap();
             evaluator::eval(expr, &mut state).unwrap();
         });
     }

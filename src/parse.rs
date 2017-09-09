@@ -1,7 +1,7 @@
 use std::str::Chars;
 use std::iter::Peekable;
 
-use super::{BuiltIn, LispExpr, LispFunc, LispMacro, LispValue};
+use super::{BuiltIn, LispExpr, LispFunc, LispMacro, LispValue, State};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ParseError {
@@ -78,13 +78,13 @@ impl<'a> Iterator for Tokens<'a> {
     }
 }
 
-pub fn parse_lisp_string(lit: &str) -> Result<LispExpr, ParseError> {
+pub fn parse_lisp_string(lit: &str, state: &mut State) -> Result<LispExpr, ParseError> {
     let mut tokens = Tokens::from_str(lit);
     // Strip the first token which we assume to be an opening paren, since
     // parse_lisp does not expect it.
     let _ = tokens.next();
 
-    let result = parse_lisp(&mut tokens);
+    let result = parse_lisp(&mut tokens, state);
 
     match tokens.next() {
         None => result.map(LispExpr::Call),
@@ -94,12 +94,12 @@ pub fn parse_lisp_string(lit: &str) -> Result<LispExpr, ParseError> {
 
 // Tries to parse an iterator of tokens into a list of expressions.
 // Expects the opening parenthesis to be stripped.
-fn parse_lisp(tokens: &mut Tokens) -> Result<Vec<LispExpr>, ParseError> {
+fn parse_lisp(tokens: &mut Tokens, state: &mut State) -> Result<Vec<LispExpr>, ParseError> {
     let mut stack = Vec::new();
 
     while let Some(token) = tokens.next() {
         let next_token = match token {
-            Token::OpenParen => LispExpr::Call(parse_lisp(tokens)?),
+            Token::OpenParen => LispExpr::Call(parse_lisp(tokens, state)?),
             Token::CloseParen => return Ok(stack),
             Token::Integer(l) => LispExpr::Value(LispValue::Integer(l)),
             Token::OpVar(o) => if let Some(mac) = LispMacro::from_str(&o) {
@@ -111,7 +111,7 @@ fn parse_lisp(tokens: &mut Tokens) -> Result<Vec<LispExpr>, ParseError> {
             } else if o == "#f" {
                 LispExpr::Value(LispValue::Boolean(false))
             } else {
-                LispExpr::OpVar(o)
+                LispExpr::OpVar(state.intern(o))
             },
         };
         stack.push(next_token);
@@ -129,7 +129,7 @@ mod tests {
         let lit = "(())";
         let expected = Ok(LispExpr::Call(vec![LispExpr::Call(vec![])]));
 
-        let result = parse_lisp_string(lit);
+        let result = parse_lisp_string(lit, &mut State::default());
         assert_eq!(expected, result);
     }
 
@@ -140,21 +140,21 @@ mod tests {
             vec![LispExpr::Value(LispValue::Integer(55))],
         ));
 
-        let result = parse_lisp_string(lit);
+        let result = parse_lisp_string(lit, &mut State::default());
         assert_eq!(expected, result);
     }
 
     #[test]
     fn parse_lisp_string_ok() {
-        let lit = "(first (list 1 (+ 2 3) 9))";
+        let lit = "(lambda (list 1 (cond 2 3) 9))";
 
         let expected = Ok(LispExpr::Call(vec![
-            LispExpr::OpVar("first".to_owned()),
+            LispExpr::Macro(LispMacro::Lambda),
             LispExpr::Call(vec![
                 LispExpr::Value(LispValue::Function(LispFunc::BuiltIn(BuiltIn::List))),
                 LispExpr::Value(LispValue::Integer(1)),
                 LispExpr::Call(vec![
-                    LispExpr::OpVar("+".to_owned()),
+                    LispExpr::Macro(LispMacro::Cond),
                     LispExpr::Value(LispValue::Integer(2)),
                     LispExpr::Value(LispValue::Integer(3)),
                 ]),
@@ -162,7 +162,7 @@ mod tests {
             ]),
         ]));
 
-        let result = parse_lisp_string(lit);
+        let result = parse_lisp_string(lit, &mut State::default());
         assert_eq!(expected, result);
     }
 
@@ -170,7 +170,7 @@ mod tests {
     fn parse_lisp_string_unbalanced() {
         let lit = "(+ 1 (- 10 5)";
         let expected = Err(ParseError::UnbalancedParens);
-        let result = parse_lisp_string(lit);
+        let result = parse_lisp_string(lit, &mut State::default());
 
         assert_eq!(expected, result);
     }
@@ -179,7 +179,7 @@ mod tests {
     fn parse_lisp_string_overbalanced() {
         let lit = "())";
         let expected = Err(ParseError::UnbalancedParens);
-        let result = parse_lisp_string(lit);
+        let result = parse_lisp_string(lit, &mut State::default());
 
         assert_eq!(expected, result);
     }

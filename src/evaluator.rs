@@ -1,5 +1,5 @@
 use super::{ArgType, BuiltIn, CustomFunc, EvaluationError, EvaluationResult, FinalizationContext,
-            FinalizedExpr, LispExpr, LispFunc, LispValue, TopExpr};
+            FinalizedExpr, InternedString, LispExpr, LispFunc, LispValue, TopExpr};
 use super::specialization;
 use std::collections::hash_map;
 use std::collections::HashMap;
@@ -7,6 +7,7 @@ use std::iter;
 use std::ops::Index;
 use std::mem::{swap, transmute};
 use std::default::Default;
+use string_interner::StringInterner;
 
 // TODO: ideally, this shouldn't be public - so
 // we can guarantee that no invalid indices can be
@@ -16,7 +17,8 @@ pub struct StateIndex(usize);
 
 #[derive(Debug, Clone)]
 pub struct State {
-    index_map: HashMap<String, usize>,
+    interns: StringInterner<InternedString>,
+    index_map: HashMap<InternedString, usize>,
     store: Vec<LispValue>,
 }
 
@@ -31,6 +33,7 @@ impl Index<StateIndex> for State {
 impl Default for State {
     fn default() -> Self {
         Self {
+            interns: StringInterner::new(),
             index_map: HashMap::new(),
             store: Vec::new(),
         }
@@ -38,13 +41,23 @@ impl Default for State {
 }
 
 impl State {
-    pub fn get_index(&self, var_name: &str) -> Option<StateIndex> {
-        self.index_map.get(var_name).map(|&i| StateIndex(i))
+    pub fn resolve_intern<'s>(&'s self, sym: InternedString) -> &'s str {
+        // We trust that InternedString values have been created by us
+        // and therefore must be valid symbols.
+        unsafe { self.interns.resolve_unchecked(sym) }
+    }
+
+    pub fn intern<S: Into<String>>(&mut self, s: S) -> InternedString {
+        self.interns.get_or_intern(s.into())
+    }
+
+    pub fn get_index(&self, var: InternedString) -> Option<StateIndex> {
+        self.index_map.get(&var).map(|&i| StateIndex(i))
     }
 
     pub fn set_variable(
         &mut self,
-        var_name: String,
+        var_name: InternedString,
         val: LispValue,
         allow_override: bool,
     ) -> EvaluationResult<()> {
@@ -76,7 +89,7 @@ pub enum Instr {
     /// The booleans indicates whether this is a tail call
     EvalFunction(usize, bool),
     /// Pops a value from the stack and adds it to the state at the given name
-    PopAndSet(String),
+    PopAndSet(InternedString),
     /// Creates a custom function with given (scope level, argument count, function body) and pushes
     /// the result to the stack
     CreateLambda(usize, usize, FinalizedExpr),
@@ -151,7 +164,7 @@ fn compile_top_expr(expr: TopExpr, state: &State) -> EvaluationResult<Vec<Instr>
     match expr {
         TopExpr::Define(name, sub_expr) => {
             let finalized_definition =
-                sub_expr.finalize(&mut FinalizationContext::new(Some(&name)))?;
+                sub_expr.finalize(&mut FinalizationContext::new(Some(name)))?;
 
             let mut instructions = vec![Instr::PopAndSet(name)];
             instructions.extend(compile_finalized_expr(finalized_definition, state)?);
@@ -174,10 +187,12 @@ pub fn compile_finalized_expr(expr: FinalizedExpr, state: &State) -> EvaluationR
         FinalizedExpr::Value(v) => {
             instructions.push(Instr::PushValue(v));
         }
-        FinalizedExpr::Variable(n) => if let Some(i) = state.get_index(&n) {
+        FinalizedExpr::Variable(n) => if let Some(i) = state.get_index(n) {
             instructions.push(Instr::PushVariable(i));
         } else {
-            return Err(EvaluationError::UnknownVariable(n));
+            return Err(EvaluationError::UnknownVariable(
+                state.resolve_intern(n).into(),
+            ));
         },
         FinalizedExpr::Cond(triple) => {
             let unpacked = *triple;
