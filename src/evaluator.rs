@@ -1,5 +1,5 @@
-use super::{ArgType, BuiltIn, CustomFunc, EvaluationError, EvaluationResult, FinalizedExpr,
-            LispExpr, LispFunc, LispValue, TopExpr};
+use super::{ArgType, BuiltIn, CustomFunc, EvaluationError, EvaluationResult, FinalizationContext,
+            FinalizedExpr, LispExpr, LispFunc, LispValue, TopExpr};
 use super::specialization;
 use std::collections::hash_map;
 use std::collections::HashMap;
@@ -151,7 +151,8 @@ fn compile_top_expr(expr: TopExpr, state: &State) -> EvaluationResult<Vec<Instr>
     match expr {
         TopExpr::Define(name, sub_expr) => {
             let finalized_definition =
-                sub_expr.finalize(0, &HashMap::new(), state, true, Some(&name))?;
+                sub_expr.finalize(&mut FinalizationContext::new(Some(&name)))?;
+
             let mut instructions = vec![Instr::PopAndSet(name)];
             instructions.extend(compile_finalized_expr(finalized_definition, state)?);
             Ok(instructions)
@@ -256,7 +257,7 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
     let mut return_values: Vec<LispValue> = Vec::new();
     let mut stax = vec![];
     let mut stack_ref = {
-        let top_expr = expr.into_top_expr(state)?;
+        let top_expr = expr.into_top_expr()?;
         let instructions = compile_top_expr(top_expr, state)?;
         let main_func = CustomFunc::from_byte_code(0, instructions);
         StackRef::new(main_func, 0, state)?
