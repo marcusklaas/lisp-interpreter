@@ -16,9 +16,9 @@ mod specialization;
 use std::mem::{swap, transmute_copy};
 use std::convert::From;
 use std::fmt;
-use std::iter::repeat;
+use std::iter::{once, repeat};
 use std::rc::Rc;
-use std::cell::UnsafeCell;
+use std::cell::{RefCell, UnsafeCell};
 use std::hash::{Hash, Hasher};
 use std::collections::HashMap;
 use evaluator::{compile_finalized_expr, Instr, State};
@@ -30,6 +30,15 @@ pub struct InnerCustomFunc {
     arg_count: usize,
     body: FinalizedExpr,
     byte_code: UnsafeCell<Vec<Instr>>,
+    // not 100% sure about this type. Maybe, just maybe, the RefCell
+    // could be replaced by an UnsafeCell but we should be extremely careful
+    // with this. It's not nearly as trivial as with the bytecode above.
+    // The (ArgType, Vec<ArgType>) pair represent the return type and
+    // argument types of the function respectively.
+    // When (if?) we get this whole specialization thing to work, we should
+    // probably look into representing the signature of the function
+    // more compactly; probably by some form of bit packing.
+    specializations: RefCell<HashMap<(ArgType, Vec<ArgType>), Rc<Vec<Instr>>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -70,6 +79,7 @@ impl CustomFunc {
             // dummy
             body: FinalizedExpr::Value(LispValue::Boolean(false)),
             byte_code: UnsafeCell::new(bytecode),
+            specializations: RefCell::new(HashMap::new()),
         }))
     }
 
@@ -164,6 +174,7 @@ impl LispFunc {
             arg_count: arg_count,
             body: body,
             byte_code: UnsafeCell::new(Vec::new()),
+            specializations: RefCell::new(HashMap::new()),
         })))
     }
 
@@ -292,7 +303,7 @@ impl FinalizedExpr {
             FinalizedExpr::Variable(interned_name) => state.resolve_intern(interned_name).into(),
             FinalizedExpr::Cond(ref triple) => {
                 let (ref test, ref true_expr, ref false_expr) = **triple;
-                let expr_iter = Some(&*true_expr).into_iter().chain(Some(&*false_expr));
+                let expr_iter = once(&*true_expr).chain(once(&*false_expr));
                 format_list(
                     state,
                     indent,

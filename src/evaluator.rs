@@ -118,6 +118,39 @@ pub enum Instr {
     CheckZero,
     CheckNull,
     CheckType(ArgType),
+
+    // Specialization instructions!
+    /// Unwraps given number of lisp values from the general value stack
+    /// and places them on their respective typed stacks.
+    /// Aborts on function values (for now)
+    Unwrap(usize),
+    /// Wraps a typed value and places it on the general value stack.
+    /// Aborts when more than a single typed value was found
+    Wrap,
+    /// Evaluates a specialized function with given types. The boolean
+    /// indicates whether it is a tail call
+    // TODO: should we have a stack for custom functions? we may not need
+    //       the arg types of the function called in that case?
+    // TODO: keep track of whether the current function call is specialized
+    //       in the stackref and if so, on what types. we need to clean up
+    //       the specialized stacks when the stackref is popped/ replaced
+    // TODO: the wrap/ unwrap instructions are probably not necessary;
+    //       we can simply execute them whenever a change of stackrefs happen
+    //       and we detect a change from specialized -> unspecialized or
+    //       vice versa
+    EvalSpecialized(Vec<ArgType>, bool),
+
+    // Specialized built-ins
+    SpecAddOne,
+    SpecSubOne,
+    /// For when we can prove that a subtraction cannot underflow
+    /// specifically, for (sub1 x) somewhere in the negative branch of
+    /// (zero? x)
+    SpecSubOneNoUnderflow,
+    SpecCheckZero,
+    /// Same behaviour as CondJump, but this reads from the boolean
+    /// stack
+    SpecCondJump(usize),
 }
 
 fn unitary_int<F: Fn(u64) -> EvaluationResult<LispValue>>(
@@ -166,9 +199,11 @@ fn compile_top_expr(expr: TopExpr, state: &State) -> EvaluationResult<Vec<Instr>
             let finalized_definition =
                 sub_expr.finalize(&mut FinalizationContext::new(Some(name)))?;
 
-            let mut instructions = vec![Instr::PopAndSet(name)];
-            instructions.extend(compile_finalized_expr(finalized_definition, state)?);
-            Ok(instructions)
+            Ok(
+                iter::once(Instr::PopAndSet(name))
+                    .chain(compile_finalized_expr(finalized_definition, state)?)
+                    .collect(),
+            )
         }
         TopExpr::Regular(sub_expr) => compile_finalized_expr(sub_expr, state),
     }
@@ -253,6 +288,14 @@ struct StackRef {
     // This reference isn't really static - it refers to vector inside of
     // instr_vec. There's just no way to express this in Rust (I think!)
     instr_slice: &'static [Instr],
+
+    // TODO: stack pointer should be sum type which is either
+    // Unspecialized(usize)
+    // or
+    // Specialized(ArgType, Vec<ArgType>),
+    // representing the type that it's returning and its argument types
+    // or maybe we should store the type that we're returning off the stack ref,
+    // as a mutable in the eval function
 }
 
 impl StackRef {
@@ -270,6 +313,10 @@ impl StackRef {
 
 pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
     let mut return_values: Vec<LispValue> = Vec::new();
+    let mut int_values: Vec<u64> = Vec::new();
+    let mut bool_values: Vec<bool> = Vec::new();
+    let mut list_values: Vec<Vec<LispValue>> = Vec::new();
+
     let mut stax = vec![];
     let mut stack_ref = {
         let top_expr = expr.into_top_expr()?;
@@ -295,6 +342,58 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
         stack_ref.instr_pointer -= 1;
 
         match stack_ref.instr_slice[stack_ref.instr_pointer] {
+            Instr::SpecCondJump(n) => if bool_values.pop().unwrap() {
+                stack_ref.instr_pointer -= n;
+            },
+            Instr::SpecCheckZero => {
+                bool_values.push(int_values.pop().unwrap() == 0);
+            }
+            Instr::SpecSubOneNoUnderflow => {
+                *int_values.last_mut().unwrap() -= 1;
+            }
+            Instr::SpecSubOne => {
+                let reference = int_values.last_mut().unwrap();
+                if *reference == 0 {
+                    return Err(EvaluationError::SubZero);
+                } else {
+                    *reference -= 1;
+                }
+            }
+            Instr::SpecAddOne => {
+                *int_values.last_mut().unwrap() += 1;
+            }
+            Instr::EvalSpecialized(ref _arg_types, _is_tail_call) => unimplemented!(),
+            Instr::Wrap => {
+                let stack_size = return_values.len();
+
+                let wrapped_value_iter = int_values
+                    .drain(..)
+                    .map(LispValue::Integer)
+                    .chain(bool_values.drain(..).map(LispValue::Boolean))
+                    .chain(list_values.drain(..).map(LispValue::List));
+
+                return_values.extend(wrapped_value_iter);
+
+                assert_eq!(
+                    stack_size + 1,
+                    return_values.len(),
+                    "Did not wrap exactly 1 value!"
+                );
+            }
+            Instr::Unwrap(count) => {
+                let stack_size = return_values.len();
+
+                for val in return_values.drain((stack_size - count)..) {
+                    match val {
+                        LispValue::Integer(i) => int_values.push(i),
+                        LispValue::Boolean(b) => bool_values.push(b),
+                        LispValue::List(l) => list_values.push(l),
+                        LispValue::Function(..) => {
+                            panic!("Specialization on functions not implemented yet!")
+                        }
+                    }
+                }
+            }
             Instr::Recurse(arg_count) => {
                 let top_index = return_values.len() - arg_count;
                 return_values.splice(stack_ref.stack_pointer..top_index, iter::empty());
@@ -357,18 +456,18 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                             update_stacks = Some((func, true));
                         }
                         LispFunc::Custom(f) => {
-                            // // FIXME: DEBUGGING ONLY
-                            // let index = return_values.len() - arg_count;
-                            // let arg_types = return_values[index..]
-                            //     .iter()
-                            //     .map(LispValue::get_type)
-                            //     .collect::<Vec<_>>();
-                            // if specialization::can_specialize(&f, &arg_types, state) {
-                            //     // TODO: we can specialize! do something with it
-                            //     println!("specialization succeeded");
-                            // } else {
-                            //     println!("specialization failed");
-                            // }
+                            // FIXME: DEBUGGING ONLY
+                            let index = return_values.len() - arg_count;
+                            let arg_types = return_values[index..]
+                                .iter()
+                                .map(LispValue::get_type)
+                                .collect::<Vec<_>>();
+                            if specialization::can_specialize(&f, &arg_types, state) {
+                                // TODO: we can specialize! do something with it
+                                println!("specialization succeeded");
+                            } else {
+                                println!("specialization failed");
+                            }
 
                             let func_arg_count = f.0.arg_count;
 

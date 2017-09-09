@@ -9,6 +9,12 @@ use petgraph::algo::condensation;
 use petgraph::visit::IntoNodeReferences;
 use std::fmt;
 
+// TODO: so the basic idea is here, but there's (at least) one important
+//       thing that needs to be added. We need to keep track of custom
+//       functions in the graph and their inputs/ outputs. That way, if
+//       specialization succeeds, we have the types of their inputs and
+//       outputs.
+
 #[derive(Debug)]
 enum SpecializationError {
     NonFunctionApplication,
@@ -134,10 +140,10 @@ fn make_specialization_graph<'e>(
     let res = expand_graph(&f.0.body, &main_ref, &mut context)?;
     context.graph.add_edge(res, main_ref.out, NoLabel);
 
-    // println!(
-    //     "{}",
-    //     Dot::with_config(&context.graph, &[Config::EdgeNoLabel])
-    // );
+    println!(
+        "{}",
+        Dot::with_config(&context.graph, &[Config::EdgeNoLabel])
+    );
 
     Ok(context.graph)
 }
