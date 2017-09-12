@@ -120,19 +120,6 @@ pub enum Instr {
     CheckType(ArgType),
 }
 
-fn unitary_int<F: Fn(u64) -> EvaluationResult<LispValue>>(
-    stack: &mut Vec<LispValue>,
-    f: F,
-) -> EvaluationResult<()> {
-    let reference = stack.last_mut().unwrap();
-
-    if let LispValue::Integer(i) = *reference {
-        Ok(*reference = f(i)?)
-    } else {
-        Err(EvaluationError::ArgumentTypeMismatch)
-    }
-}
-
 fn unitary_list<F: Fn(Vec<LispValue>) -> EvaluationResult<LispValue>>(
     stack: &mut Vec<LispValue>,
     f: F,
@@ -436,12 +423,24 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
             Instr::CheckNull => unitary_list(&mut return_values, |vec| {
                 Ok(LispValue::Boolean(vec.is_empty()))
             })?,
-            Instr::AddOne => unitary_int(&mut return_values, |i| Ok(LispValue::Integer(i + 1)))?,
-            Instr::SubOne => unitary_int(&mut return_values, |i| if i > 0 {
-                Ok(LispValue::Integer(i - 1))
-            } else {
-                Err(EvaluationError::SubZero)
-            })?,
+            Instr::AddOne => {
+                if let &mut LispValue::Integer(ref mut i) = return_values.last_mut().unwrap() {
+                    *i += 1;
+                } else {
+                    return Err(EvaluationError::ArgumentTypeMismatch);
+                }
+            }
+            Instr::SubOne => {
+                if let &mut LispValue::Integer(ref mut i) = return_values.last_mut().unwrap() {
+                    if *i > 0 {
+                        *i -= 1;
+                    } else {
+                        return Err(EvaluationError::SubZero);
+                    }
+                } else {
+                    return Err(EvaluationError::ArgumentTypeMismatch);
+                }
+            }
             Instr::Cons => if let LispValue::List(mut new_vec) = return_values.pop().unwrap() {
                 new_vec.push(return_values.pop().unwrap());
                 return_values.push(LispValue::List(new_vec));
@@ -449,7 +448,13 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                 return Err(EvaluationError::ArgumentTypeMismatch);
             },
             Instr::CheckZero => {
-                unitary_int(&mut return_values, |i| Ok(LispValue::Boolean(i == 0)))?
+                let reference = return_values.last_mut().unwrap();
+                let is_zero = if let &mut LispValue::Integer(i) = reference {
+                    i == 0
+                } else {
+                    return Err(EvaluationError::ArgumentTypeMismatch);
+                };
+                *reference = LispValue::Boolean(is_zero);
             }
             Instr::CheckType(arg_type) => {
                 let same_type = arg_type == return_values.pop().unwrap().get_type();
