@@ -13,7 +13,7 @@ pub mod parse;
 pub mod evaluator;
 mod specialization;
 
-use std::mem::{replace, swap, transmute_copy};
+use std::mem::{replace, transmute_copy};
 use std::convert::From;
 use std::fmt;
 use std::iter::repeat;
@@ -267,9 +267,10 @@ impl FinalizedExpr {
         match *self {
             FinalizedExpr::Argument(index, arg_scope, is_move) if arg_scope < scope_level => {
                 if is_move {
-                    let mut dummy = LispValue::Boolean(false);
-                    swap(&mut dummy, &mut stack[index]);
-                    FinalizedExpr::Value(dummy)
+                    FinalizedExpr::Value(replace(
+                        stack.get_mut(index).unwrap(),
+                        LispValue::Boolean(false),
+                    ))
                 } else {
                     FinalizedExpr::Value(stack[index].clone())
                 }
@@ -513,8 +514,11 @@ impl LispExpr {
                                         .push((symbol, (ctx.scope_level, offset, true)));
                                 }
 
+                                // Update context for lambda
                                 let orig_scope_level = ctx.scope_level;
+                                let current_tail_status = ctx.can_tail_call;
                                 ctx.scope_level = ctx.scope_level.next();
+                                ctx.can_tail_call = true;
 
                                 let result = FinalizedExpr::Lambda(
                                     num_args,
@@ -522,7 +526,9 @@ impl LispExpr {
                                     Box::new(body.finalize(ctx)?),
                                 );
 
+                                // Reset context to original state
                                 ctx.scope_level = orig_scope_level;
+                                ctx.can_tail_call = current_tail_status;
                                 ctx.arguments.truncate(arguments_len);
 
                                 result
@@ -552,8 +558,7 @@ impl LispExpr {
                         // get to use the moves first.
                         let mut arg_finalized_expr = Vec::with_capacity(expr_iter.size_hint().0);
                         for e in expr_iter.rev() {
-                            let finalized = e.finalize(ctx)?;
-                            arg_finalized_expr.push(finalized);
+                            arg_finalized_expr.push(e.finalize(ctx)?);
                         }
                         arg_finalized_expr.reverse();
 

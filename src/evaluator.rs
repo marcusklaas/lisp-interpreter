@@ -5,7 +5,7 @@ use std::collections::hash_map;
 use std::collections::HashMap;
 use std::iter;
 use std::ops::Index;
-use std::mem::{swap, transmute};
+use std::mem::{replace, transmute};
 use std::default::Default;
 use string_interner::StringInterner;
 
@@ -179,23 +179,19 @@ fn inner_compile(
     expr: FinalizedExpr,
     state: &State,
     instructions: &mut Vec<Instr>,
-) -> EvaluationResult<usize> {
-    Ok(match expr {
+) -> EvaluationResult<()> {
+    match expr {
         FinalizedExpr::Argument(offset, _scope, true) => {
             instructions.push(Instr::MoveArgument(offset));
-            1
         }
         FinalizedExpr::Argument(offset, _scope, false) => {
             instructions.push(Instr::CloneArgument(offset));
-            1
         }
         FinalizedExpr::Value(v) => {
             instructions.push(Instr::PushValue(v));
-            1
         }
         FinalizedExpr::Variable(n) => if let Some(i) = state.get_index(n) {
             instructions.push(Instr::PushVariable(i));
-            1
         } else {
             return Err(EvaluationError::UnknownVariable(
                 state.resolve_intern(n).into(),
@@ -204,37 +200,36 @@ fn inner_compile(
         FinalizedExpr::Cond(triple) => {
             let unpacked = *triple;
             let (test, true_expr, false_expr) = unpacked;
-            let true_expr_len = inner_compile(true_expr, state, instructions)?;
-            instructions.push(Instr::Jump(true_expr_len));
-            let false_expr_len = inner_compile(false_expr, state, instructions)?;
-            instructions.push(Instr::CondJump(false_expr_len + 1));
-            // 2 = the number of (conditional) jump instructions
-            2 + false_expr_len + true_expr_len + inner_compile(test, state, instructions)?
+            let before_len = instructions.len();
+            inner_compile(true_expr, state, instructions)?;
+            let jump_size = instructions.len() - before_len;
+            let before_len = instructions.len();
+            instructions.push(Instr::Jump(jump_size));
+            inner_compile(false_expr, state, instructions)?;
+            let jump_size = instructions.len() - before_len;
+            instructions.push(Instr::CondJump(jump_size));
+            inner_compile(test, state, instructions)?;
         }
         FinalizedExpr::Lambda(arg_count, scope, body) => {
             instructions.push(Instr::CreateLambda(scope, arg_count, *body));
-            1
         }
         FinalizedExpr::FunctionCall(funk, args, is_tail_call, is_self_call) => {
-            let mut count =
-                if let FinalizedExpr::Value(LispValue::Function(LispFunc::BuiltIn(f))) = *funk {
-                    instructions.push(builtin_instr(f, args.len())?);
-                    1
-                } else if is_tail_call && is_self_call {
-                    instructions.push(Instr::Recurse(args.len()));
-                    1
-                } else {
-                    instructions.push(Instr::EvalFunction(args.len(), is_tail_call));
-                    inner_compile(*funk, state, instructions)? + 1
-                };
+            if let FinalizedExpr::Value(LispValue::Function(LispFunc::BuiltIn(f))) = *funk {
+                instructions.push(builtin_instr(f, args.len())?);
+            } else if is_tail_call && is_self_call {
+                instructions.push(Instr::Recurse(args.len()));
+            } else {
+                instructions.push(Instr::EvalFunction(args.len(), is_tail_call));
+                inner_compile(*funk, state, instructions)?;
+            };
 
             for expr in args.into_iter().rev() {
-                count += inner_compile(expr, state, instructions)?;
+                inner_compile(expr, state, instructions)?;
             }
-
-            count
         }
-    })
+    }
+
+    Ok(())
 }
 
 pub fn compile_finalized_expr(expr: FinalizedExpr, state: &State) -> EvaluationResult<Vec<Instr>> {
@@ -294,7 +289,7 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
 
     'l: loop {
         // Pop stack frame when there's no more instructions in this one
-        while stack_ref.instr_pointer == 0 {
+        if stack_ref.instr_pointer == 0 {
             let top_index = return_values.len() - 1;
             return_values.splice(stack_ref.stack_pointer..top_index, iter::empty());
 
@@ -312,7 +307,7 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
             Instr::Recurse(arg_count) => {
                 let top_index = return_values.len() - arg_count;
                 return_values.splice(stack_ref.stack_pointer..top_index, iter::empty());
-                stack_ref.instr_pointer = { stack_ref.instr_slice.len() };
+                stack_ref.instr_pointer = stack_ref.instr_slice.len();
             }
             Instr::CreateLambda(scope, arg_count, ref body) => {
                 // If there are any references to function arguments in
@@ -344,15 +339,19 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                 return_values.push(value);
             }
             Instr::MoveArgument(offset) => {
-                let len = return_values.len();
-                return_values.push(LispValue::Boolean(false));
-                return_values.swap(stack_ref.stack_pointer + offset, len);
+                let val = replace(
+                    return_values
+                        .get_mut(stack_ref.stack_pointer + offset)
+                        .unwrap(),
+                    LispValue::Boolean(false),
+                );
+                return_values.push(val);
             }
             Instr::PushVariable(i) => {
                 return_values.push(state[i].clone());
             }
-            Instr::PopAndSet(ref var_name) => {
-                state.set_variable(var_name.clone(), return_values.pop().unwrap(), false)?;
+            Instr::PopAndSet(var_name) => {
+                state.set_variable(var_name, return_values.pop().unwrap(), false)?;
                 return_values.push(LispValue::List(Vec::new()));
             }
             // Pops a function off the value stack and applies it
@@ -461,13 +460,15 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
         // This solution is not very elegant, but it's necessary
         // to please the borrowchecker in a safe manner.
         if let Some((next_func, push_stack)) = update_stacks {
+            let not_last_instr = stack_ref.instr_pointer != 0;
             let next_arg_count = next_func.0.arg_count;
-            let mut next_stack_ref =
+            let next_stack_ref =
                 StackRef::new(next_func, return_values.len() - next_arg_count, state)?;
-            swap(&mut next_stack_ref, &mut stack_ref);
 
-            if push_stack {
-                stax.push(next_stack_ref);
+            if push_stack && not_last_instr {
+                stax.push(replace(&mut stack_ref, next_stack_ref));
+            } else {
+                stack_ref = next_stack_ref;
             }
         }
     }
