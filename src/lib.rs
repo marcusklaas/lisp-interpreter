@@ -20,7 +20,6 @@ use std::iter::repeat;
 use std::rc::Rc;
 use std::cell::UnsafeCell;
 use std::hash::{Hash, Hasher};
-use std::collections::HashMap;
 use evaluator::{compile_finalized_expr, Instr, State};
 
 type EvaluationResult<T> = Result<T, EvaluationError>;
@@ -374,7 +373,7 @@ pub enum LispExpr {
 pub struct FinalizationContext {
     scope_level: usize,
     // maps symbols to (scope_level, offset, moveable)
-    arguments: HashMap<InternedString, (usize, usize, bool)>,
+    arguments: Vec<(InternedString, (usize, usize, bool))>,
     can_tail_call: bool,
     own_name: Option<InternedString>,
 }
@@ -383,7 +382,7 @@ impl FinalizationContext {
     fn new(own_name: Option<InternedString>) -> FinalizationContext {
         FinalizationContext {
             scope_level: 0,
-            arguments: HashMap::new(),
+            arguments: Vec::new(),
             can_tail_call: true,
             own_name: own_name,
         }
@@ -428,8 +427,11 @@ impl LispExpr {
                 // a function argument, in which case it should be in the arguments map
                 // a reference to something in our state.
                 // Function arguments take precendence.
-                if let Some(&mut (arg_scope, arg_offset, ref mut moveable)) =
-                    ctx.arguments.get_mut(&n)
+                if let Some(&mut (_, (arg_scope, arg_offset, ref mut moveable))) = ctx.arguments
+                    .iter_mut()
+                    .rev()
+                    .skip_while(|&&mut (o, _)| o != n)
+                    .next()
                 {
                     let is_moveable = *moveable;
                     *moveable = false;
@@ -459,10 +461,14 @@ impl LispExpr {
                             let finalized_false_expr = false_expr.finalize(&mut false_expr_ctx)?;
                             let finalized_true_expr = true_expr.finalize(ctx)?;
 
-                            for (key, val_ref) in ctx.arguments.iter_mut() {
-                                let new_value = val_ref.2 && false_expr_ctx.arguments[key].2;
-                                val_ref.2 = new_value;
+                            for (&mut (_, (_, _, ref mut arg_true)), &(_, (_, _, arg_false))) in
+                                ctx.arguments
+                                    .iter_mut()
+                                    .zip(false_expr_ctx.arguments.iter())
+                            {
+                                *arg_true = *arg_true && arg_false;
                             }
+
                             ctx.can_tail_call = false;
 
                             FinalizedExpr::Cond(Box::new((
@@ -477,9 +483,8 @@ impl LispExpr {
                             if let LispExpr::Call(ref arg_vec) = arg_list {
                                 // Add arguments to the arguments map, overwriting existing
                                 // ones if they have the same symbol.
-                                // FIXME: movement of arguments that aren't overwritten are screwed by this
-                                let mut new_arguments = ctx.arguments.clone();
                                 let num_args = arg_vec.len();
+                                let arguments_len = ctx.arguments.len();
 
                                 for (offset, expr) in arg_vec.into_iter().enumerate() {
                                     let symbol = match *expr {
@@ -487,21 +492,23 @@ impl LispExpr {
                                         _ => Err(EvaluationError::MalformedDefinition),
                                     }?;
 
-                                    new_arguments
-                                        .insert(symbol.to_owned(), (ctx.scope_level, offset, true));
+                                    ctx.arguments
+                                        .push((symbol.to_owned(), (ctx.scope_level, offset, true)));
                                 }
 
-                                let mut new_ctx = FinalizationContext {
-                                    scope_level: ctx.scope_level + 1,
-                                    arguments: new_arguments,
-                                    ..*ctx
-                                };
+                                let orig_scope_level = ctx.scope_level;
+                                ctx.scope_level += 1;
 
-                                FinalizedExpr::Lambda(
+                                let result = FinalizedExpr::Lambda(
                                     num_args,
-                                    ctx.scope_level,
-                                    Box::new(body.finalize(&mut new_ctx)?),
-                                )
+                                    orig_scope_level,
+                                    Box::new(body.finalize(ctx)?),
+                                );
+
+                                ctx.scope_level = orig_scope_level;
+                                ctx.arguments.truncate(arguments_len);
+
+                                result
                             } else {
                                 return Err(EvaluationError::ArgumentTypeMismatch);
                             }
