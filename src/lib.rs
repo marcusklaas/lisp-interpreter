@@ -13,7 +13,7 @@ pub mod parse;
 pub mod evaluator;
 mod specialization;
 
-use std::mem::{swap, transmute_copy};
+use std::mem::{replace, swap, transmute_copy};
 use std::convert::From;
 use std::fmt;
 use std::iter::repeat;
@@ -84,6 +84,27 @@ impl CustomFunc {
 
         result.push_str(&format!(" ->\n{}", indent_to_string(indent + 1)));
         result + &self.0.body.pretty_print(state, indent + 1)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Scope(u32);
+
+impl fmt::Display for Scope {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl Default for Scope {
+    fn default() -> Self {
+        Scope(0)
+    }
+}
+
+impl Scope {
+    fn next(self) -> Self {
+        Scope(self.0 + 1)
     }
 }
 
@@ -182,7 +203,7 @@ impl LispFunc {
             .map(FinalizedExpr::Value)
             // TODO: check that we can get away with just setting scope to 0
             // or whether we need to be more clever
-            .chain((0..total_args - supplied_args).map(|o| FinalizedExpr::Argument(o, 0, true)))
+            .chain((0..total_args - supplied_args).map(|o| FinalizedExpr::Argument(o, Scope::default(), true)))
             .collect();
 
         Self::new_custom(
@@ -231,20 +252,20 @@ pub enum TopExpr {
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum FinalizedExpr {
     // Arg count, scope level, body
-    Lambda(usize, usize, Box<FinalizedExpr>),
+    Lambda(usize, Scope, Box<FinalizedExpr>),
     // test expr, true branch, false branch
     Cond(Box<(FinalizedExpr, FinalizedExpr, FinalizedExpr)>),
     Variable(InternedString),
     Value(LispValue),
     // Offset from stack pointer, scope level, moveable
-    Argument(usize, usize, bool),
+    Argument(usize, Scope, bool),
     // function, arguments, tail-call, self-call
     FunctionCall(Box<FinalizedExpr>, Vec<FinalizedExpr>, bool, bool),
 }
 
 impl FinalizedExpr {
     // Resolves references to function arguments. Used when creating closures.
-    pub fn replace_args(&self, scope_level: usize, stack: &mut [LispValue]) -> FinalizedExpr {
+    pub fn replace_args(&self, scope_level: Scope, stack: &mut [LispValue]) -> FinalizedExpr {
         match *self {
             FinalizedExpr::Argument(index, arg_scope, is_move) if arg_scope < scope_level => {
                 if is_move {
@@ -371,9 +392,9 @@ pub enum LispExpr {
 }
 
 pub struct FinalizationContext {
-    scope_level: usize,
+    scope_level: Scope,
     // maps symbols to (scope_level, offset, moveable)
-    arguments: Vec<(InternedString, (usize, usize, bool))>,
+    arguments: Vec<(InternedString, (Scope, usize, bool))>,
     can_tail_call: bool,
     own_name: Option<InternedString>,
 }
@@ -381,7 +402,7 @@ pub struct FinalizationContext {
 impl FinalizationContext {
     fn new(own_name: Option<InternedString>) -> FinalizationContext {
         FinalizationContext {
-            scope_level: 0,
+            scope_level: Scope::default(),
             arguments: Vec::new(),
             can_tail_call: true,
             own_name: own_name,
@@ -427,18 +448,15 @@ impl LispExpr {
                 // a function argument, in which case it should be in the arguments map
                 // a reference to something in our state.
                 // Function arguments take precendence.
-                if let Some(&mut (_, (arg_scope, arg_offset, ref mut moveable))) = ctx.arguments
+                ctx.arguments
                     .iter_mut()
                     .rev()
-                    .skip_while(|&&mut (o, _)| o != n)
+                    .filter(|&&mut (o, _)| o == n)
                     .next()
-                {
-                    let is_moveable = *moveable;
-                    *moveable = false;
-                    FinalizedExpr::Argument(arg_offset, arg_scope, is_moveable)
-                } else {
-                    FinalizedExpr::Variable(n)
-                }
+                    .map(|&mut (_, (arg_scope, arg_offset, ref mut moveable))| {
+                        FinalizedExpr::Argument(arg_offset, arg_scope, replace(moveable, false))
+                    })
+                    .unwrap_or(FinalizedExpr::Variable(n))
             }
             LispExpr::Macro(..) => {
                 return Err(EvaluationError::UnexpectedOperator);
@@ -497,7 +515,7 @@ impl LispExpr {
                                 }
 
                                 let orig_scope_level = ctx.scope_level;
-                                ctx.scope_level += 1;
+                                ctx.scope_level = ctx.scope_level.next();
 
                                 let result = FinalizedExpr::Lambda(
                                     num_args,
@@ -521,11 +539,9 @@ impl LispExpr {
                     // Function evaluation
                     _ => {
                         let is_self_call = if let LispExpr::OpVar(intern) = head_expr {
-                            if let Some(self_name) = ctx.own_name {
-                                intern == self_name
-                            } else {
-                                false
-                            }
+                            ctx.own_name
+                                .map(|self_name| intern == self_name)
+                                .unwrap_or(false)
                         } else {
                             false
                         };
@@ -535,7 +551,7 @@ impl LispExpr {
                         // We traverse the arguments from last to first to make sure
                         // we get the argument moves correctly. The last arguments
                         // get to use the moves first.
-                        let mut arg_finalized_expr = Vec::new();
+                        let mut arg_finalized_expr = Vec::with_capacity(expr_iter.size_hint().0);
                         for e in expr_iter.rev() {
                             let finalized = e.finalize(ctx)?;
                             arg_finalized_expr.push(finalized);

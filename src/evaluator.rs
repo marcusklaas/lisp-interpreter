@@ -1,5 +1,5 @@
 use super::{ArgType, BuiltIn, CustomFunc, EvaluationError, EvaluationResult, FinalizationContext,
-            FinalizedExpr, InternedString, LispExpr, LispFunc, LispValue, TopExpr};
+            FinalizedExpr, InternedString, LispExpr, LispFunc, LispValue, Scope, TopExpr};
 use super::specialization;
 use std::collections::hash_map;
 use std::collections::HashMap;
@@ -92,7 +92,7 @@ pub enum Instr {
     PopAndSet(InternedString),
     /// Creates a custom function with given (scope level, argument count, function body) and pushes
     /// the result to the stack
-    CreateLambda(usize, usize, FinalizedExpr),
+    CreateLambda(Scope, usize, FinalizedExpr),
 
     /// Skips the given number of instructions
     Jump(usize),
@@ -209,7 +209,7 @@ pub fn compile_finalized_expr(expr: FinalizedExpr, state: &State) -> EvaluationR
             instructions.extend(compile_finalized_expr(test, state)?);
         }
         FinalizedExpr::Lambda(arg_count, scope, body) => {
-            instructions.push(Instr::CreateLambda(arg_count, scope, *body));
+            instructions.push(Instr::CreateLambda(scope, arg_count, *body));
         }
         FinalizedExpr::FunctionCall(funk, args, is_tail_call, is_self_call) => {
             if let FinalizedExpr::Value(LispValue::Function(LispFunc::BuiltIn(f))) = *funk {
@@ -300,7 +300,7 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                 return_values.splice(stack_ref.stack_pointer..top_index, iter::empty());
                 stack_ref.instr_pointer = { stack_ref.instr_slice.len() };
             }
-            Instr::CreateLambda(arg_count, scope, ref body) => {
+            Instr::CreateLambda(scope, arg_count, ref body) => {
                 // If there are any references to function arguments in
                 // the lambda body, we should resolve them before
                 // creating the lambda.
