@@ -191,17 +191,15 @@ impl LispFunc {
         f: CustomFunc,
         total_args: usize,
         supplied_args: usize,
-        stack: &[LispValue],
+        stack: &mut [LispValue],
     ) -> LispFunc {
         let arg_count = total_args - supplied_args;
         let funk = Box::new(FinalizedExpr::Value(
             LispValue::Function(LispFunc::Custom(f)),
         ));
-        let arg_vec = stack[..supplied_args]
-            .iter()
-            .cloned()
-            .map(FinalizedExpr::Value)
-            // TODO: check that we can get away with just setting scope to 0
+        let arg_vec = (0..supplied_args)
+            .map(|i| FinalizedExpr::Value(replace(stack.get_mut(i).unwrap(), LispValue::Boolean(false))))
+            // TODO: check that we can get away with just taking the default scope
             // or whether we need to be more clever
             .chain((0..total_args - supplied_args).map(|o| FinalizedExpr::Argument(o, Scope::default(), true)))
             .collect();
@@ -1114,6 +1112,22 @@ mod tests {
                 ],
             )
         });
+    }
+
+    #[bench]
+    fn bench_curry(b: &mut super::test::Bencher) {
+        let mut state = State::default();
+        let init_commands = vec![
+            "(define add (lambda (x y) (cond (zero? y) x (add (add1 x) (sub1 y)))))",
+            "(define curried-add (lambda (x y) ((add x) y)))",
+        ];
+
+        for cmd in init_commands {
+            let expr = parse_lisp_string(cmd, &mut state).unwrap();
+            evaluator::eval(expr, &mut state).unwrap();
+        }
+
+        b.iter(|| check_lisp(&mut state, vec!["(curried-add 100 100)"]));
     }
 
     #[bench]

@@ -398,7 +398,7 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                                     f,
                                     func_arg_count,
                                     arg_count,
-                                    &return_values[temp_stack..],
+                                    &mut return_values[temp_stack..],
                                 );
 
                                 return_values.truncate(temp_stack);
