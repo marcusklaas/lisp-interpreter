@@ -503,6 +503,7 @@ impl LispExpr {
                                 // ones if they have the same symbol.
                                 let num_args = arg_vec.len();
                                 let arguments_len = ctx.arguments.len();
+                                ctx.arguments.reserve(num_args);
 
                                 for (offset, expr) in arg_vec.into_iter().enumerate() {
                                     let symbol = match *expr {
@@ -511,7 +512,7 @@ impl LispExpr {
                                     }?;
 
                                     ctx.arguments
-                                        .push((symbol.to_owned(), (ctx.scope_level, offset, true)));
+                                        .push((symbol, (ctx.scope_level, offset, true)));
                                 }
 
                                 let orig_scope_level = ctx.scope_level;

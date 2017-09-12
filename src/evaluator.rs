@@ -174,21 +174,28 @@ fn compile_top_expr(expr: TopExpr, state: &State) -> EvaluationResult<Vec<Instr>
     }
 }
 
-pub fn compile_finalized_expr(expr: FinalizedExpr, state: &State) -> EvaluationResult<Vec<Instr>> {
-    let mut instructions = Vec::new();
-
-    match expr {
+// return the number of instructions written
+fn inner_compile(
+    expr: FinalizedExpr,
+    state: &State,
+    instructions: &mut Vec<Instr>,
+) -> EvaluationResult<usize> {
+    Ok(match expr {
         FinalizedExpr::Argument(offset, _scope, true) => {
             instructions.push(Instr::MoveArgument(offset));
+            1
         }
         FinalizedExpr::Argument(offset, _scope, false) => {
             instructions.push(Instr::CloneArgument(offset));
+            1
         }
         FinalizedExpr::Value(v) => {
             instructions.push(Instr::PushValue(v));
+            1
         }
         FinalizedExpr::Variable(n) => if let Some(i) = state.get_index(n) {
             instructions.push(Instr::PushVariable(i));
+            1
         } else {
             return Err(EvaluationError::UnknownVariable(
                 state.resolve_intern(n).into(),
@@ -197,36 +204,43 @@ pub fn compile_finalized_expr(expr: FinalizedExpr, state: &State) -> EvaluationR
         FinalizedExpr::Cond(triple) => {
             let unpacked = *triple;
             let (test, true_expr, false_expr) = unpacked;
-            let true_expr_vec = compile_finalized_expr(true_expr, state)?;
-            let false_expr_vec = compile_finalized_expr(false_expr, state)?;
-            let true_expr_len = true_expr_vec.len();
-            let false_expr_len = false_expr_vec.len();
-
-            instructions.extend(true_expr_vec);
+            let true_expr_len = inner_compile(true_expr, state, instructions)?;
             instructions.push(Instr::Jump(true_expr_len));
-            instructions.extend(false_expr_vec);
+            let false_expr_len = inner_compile(false_expr, state, instructions)?;
             instructions.push(Instr::CondJump(false_expr_len + 1));
-            instructions.extend(compile_finalized_expr(test, state)?);
+            // 2 = the number of (conditional) jump instructions
+            2 + false_expr_len + true_expr_len + inner_compile(test, state, instructions)?
         }
         FinalizedExpr::Lambda(arg_count, scope, body) => {
             instructions.push(Instr::CreateLambda(scope, arg_count, *body));
+            1
         }
         FinalizedExpr::FunctionCall(funk, args, is_tail_call, is_self_call) => {
-            if let FinalizedExpr::Value(LispValue::Function(LispFunc::BuiltIn(f))) = *funk {
-                instructions.push(builtin_instr(f, args.len())?);
-            } else if is_tail_call && is_self_call {
-                instructions.push(Instr::Recurse(args.len()));
-            } else {
-                instructions.push(Instr::EvalFunction(args.len(), is_tail_call));
-                instructions.extend(compile_finalized_expr(*funk, state)?);
-            }
+            let mut count =
+                if let FinalizedExpr::Value(LispValue::Function(LispFunc::BuiltIn(f))) = *funk {
+                    instructions.push(builtin_instr(f, args.len())?);
+                    1
+                } else if is_tail_call && is_self_call {
+                    instructions.push(Instr::Recurse(args.len()));
+                    1
+                } else {
+                    instructions.push(Instr::EvalFunction(args.len(), is_tail_call));
+                    inner_compile(*funk, state, instructions)? + 1
+                };
 
             for expr in args.into_iter().rev() {
-                let instr_vec = compile_finalized_expr(expr, state)?;
-                instructions.extend(instr_vec);
+                count += inner_compile(expr, state, instructions)?;
             }
+
+            count
         }
-    }
+    })
+}
+
+pub fn compile_finalized_expr(expr: FinalizedExpr, state: &State) -> EvaluationResult<Vec<Instr>> {
+    let mut instructions = Vec::with_capacity(32);
+
+    inner_compile(expr, state, &mut instructions)?;
 
     Ok(instructions)
 }
