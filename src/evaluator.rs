@@ -1,11 +1,12 @@
 use super::{ArgType, BuiltIn, CustomFunc, EvaluationError, EvaluationResult, FinalizationContext,
-            FinalizedExpr, InternedString, LispExpr, LispFunc, LispValue, Scope, TopExpr};
-use super::specialization;
+            FinalizedExpr, InternedString, LispExpr, LispFunc, LispValue, MoveStatus, Scope,
+            TopExpr};
+// use super::specialization;
 use std::collections::hash_map;
 use std::collections::HashMap;
 use std::iter;
 use std::ops::Index;
-use std::mem::{swap, transmute};
+use std::mem::{replace, transmute};
 use std::default::Default;
 use string_interner::StringInterner;
 
@@ -118,29 +119,30 @@ pub enum Instr {
     CheckZero,
     CheckNull,
     CheckType(ArgType),
+    /// Pushes the car of the variable with given offset to the stack.
+    /// This is functionally equivalent to [CloneArgument(offset), Car]
+    VarCar(usize),
+    /// Checks whether a variable with given offset is zero and pushes
+    /// the result to the stack
+    VarCheckZero(usize),
+    /// Checks whether a variable with given offset is an empty list and
+    /// pushes the result to the stack
+    VarCheckNull(usize),
 }
 
-fn unitary_int<F: Fn(u64) -> EvaluationResult<LispValue>>(
+fn unitary_list<F: Fn(&mut Vec<LispValue>) -> EvaluationResult<LispValue>>(
     stack: &mut Vec<LispValue>,
     f: F,
 ) -> EvaluationResult<()> {
     let reference = stack.last_mut().unwrap();
 
-    if let LispValue::Integer(i) = *reference {
-        Ok(*reference = f(i)?)
+    *reference = if let &mut LispValue::List(ref mut v) = reference {
+        f(v)?
     } else {
-        Err(EvaluationError::ArgumentTypeMismatch)
-    }
-}
+        return Err(EvaluationError::ArgumentTypeMismatch);
+    };
 
-fn unitary_list<F: Fn(Vec<LispValue>) -> EvaluationResult<LispValue>>(
-    stack: &mut Vec<LispValue>,
-    f: F,
-) -> EvaluationResult<()> {
-    match stack.pop().unwrap() {
-        LispValue::List(v) => Ok(stack.push(f(v)?)),
-        _ => Err(EvaluationError::ArgumentTypeMismatch),
-    }
+    Ok(())
 }
 
 #[macro_export]
@@ -179,23 +181,19 @@ fn inner_compile(
     expr: FinalizedExpr,
     state: &State,
     instructions: &mut Vec<Instr>,
-) -> EvaluationResult<usize> {
-    Ok(match expr {
-        FinalizedExpr::Argument(offset, _scope, true) => {
+) -> EvaluationResult<()> {
+    match expr {
+        FinalizedExpr::Argument(offset, _scope, MoveStatus::Unmoved) => {
             instructions.push(Instr::MoveArgument(offset));
-            1
         }
-        FinalizedExpr::Argument(offset, _scope, false) => {
+        FinalizedExpr::Argument(offset, _scope, _move_status) => {
             instructions.push(Instr::CloneArgument(offset));
-            1
         }
         FinalizedExpr::Value(v) => {
             instructions.push(Instr::PushValue(v));
-            1
         }
         FinalizedExpr::Variable(n) => if let Some(i) = state.get_index(n) {
             instructions.push(Instr::PushVariable(i));
-            1
         } else {
             return Err(EvaluationError::UnknownVariable(
                 state.resolve_intern(n).into(),
@@ -204,37 +202,60 @@ fn inner_compile(
         FinalizedExpr::Cond(triple) => {
             let unpacked = *triple;
             let (test, true_expr, false_expr) = unpacked;
-            let true_expr_len = inner_compile(true_expr, state, instructions)?;
-            instructions.push(Instr::Jump(true_expr_len));
-            let false_expr_len = inner_compile(false_expr, state, instructions)?;
-            instructions.push(Instr::CondJump(false_expr_len + 1));
-            // 2 = the number of (conditional) jump instructions
-            2 + false_expr_len + true_expr_len + inner_compile(test, state, instructions)?
+            let before_len = instructions.len();
+            inner_compile(true_expr, state, instructions)?;
+            let jump_size = instructions.len() - before_len;
+            let before_len = instructions.len();
+            instructions.push(Instr::Jump(jump_size));
+            inner_compile(false_expr, state, instructions)?;
+            let jump_size = instructions.len() - before_len;
+            instructions.push(Instr::CondJump(jump_size));
+            inner_compile(test, state, instructions)?;
         }
         FinalizedExpr::Lambda(arg_count, scope, body) => {
             instructions.push(Instr::CreateLambda(scope, arg_count, *body));
-            1
         }
         FinalizedExpr::FunctionCall(funk, args, is_tail_call, is_self_call) => {
-            let mut count =
-                if let FinalizedExpr::Value(LispValue::Function(LispFunc::BuiltIn(f))) = *funk {
-                    instructions.push(builtin_instr(f, args.len())?);
-                    1
-                } else if is_tail_call && is_self_call {
-                    instructions.push(Instr::Recurse(args.len()));
-                    1
-                } else {
-                    instructions.push(Instr::EvalFunction(args.len(), is_tail_call));
-                    inner_compile(*funk, state, instructions)? + 1
-                };
+            if let FinalizedExpr::Value(LispValue::Function(LispFunc::BuiltIn(bf))) = *funk {
+                match bf {
+                    BuiltIn::Car | BuiltIn::CheckNull | BuiltIn::CheckZero
+                        if {
+                            if let Some(&FinalizedExpr::Argument(_, _, _)) = args.get(0) {
+                                args.len() == 1
+                            } else {
+                                false
+                            }
+                        } =>
+                    {
+                        // Inspection mode!
+                        if let FinalizedExpr::Argument(offset, _scope, _move_status) = args[0] {
+                            instructions.push(match bf {
+                                BuiltIn::CheckNull => Instr::VarCheckNull(offset),
+                                BuiltIn::CheckZero => Instr::VarCheckZero(offset),
+                                BuiltIn::Car => Instr::VarCar(offset),
+                                _ => unreachable!(),
+                            });
+                            return Ok(());
+                        } else {
+                            unreachable!()
+                        }
+                    }
+                    f => instructions.push(builtin_instr(f, args.len())?),
+                }
+            } else if is_tail_call && is_self_call {
+                instructions.push(Instr::Recurse(args.len()));
+            } else {
+                instructions.push(Instr::EvalFunction(args.len(), is_tail_call));
+                inner_compile(*funk, state, instructions)?;
+            };
 
             for expr in args.into_iter().rev() {
-                count += inner_compile(expr, state, instructions)?;
+                inner_compile(expr, state, instructions)?;
             }
-
-            count
         }
-    })
+    }
+
+    Ok(())
 }
 
 pub fn compile_finalized_expr(expr: FinalizedExpr, state: &State) -> EvaluationResult<Vec<Instr>> {
@@ -294,7 +315,7 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
 
     'l: loop {
         // Pop stack frame when there's no more instructions in this one
-        while stack_ref.instr_pointer == 0 {
+        if stack_ref.instr_pointer == 0 {
             let top_index = return_values.len() - 1;
             return_values.splice(stack_ref.stack_pointer..top_index, iter::empty());
 
@@ -305,14 +326,50 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
             }
         }
 
-        let mut update_stacks = None;
         stack_ref.instr_pointer -= 1;
 
         match stack_ref.instr_slice[stack_ref.instr_pointer] {
+            Instr::VarCheckNull(offset) => {
+                let head = if let &LispValue::List(ref l) =
+                    return_values.get(stack_ref.stack_pointer + offset).unwrap()
+                {
+                    LispValue::Boolean(l.is_empty())
+                } else {
+                    return Err(EvaluationError::ArgumentTypeMismatch);
+                };
+
+                return_values.push(head);
+            }
+            Instr::VarCheckZero(offset) => {
+                let head = if let &LispValue::Integer(i) =
+                    return_values.get(stack_ref.stack_pointer + offset).unwrap()
+                {
+                    LispValue::Boolean(i == 0)
+                } else {
+                    return Err(EvaluationError::ArgumentTypeMismatch);
+                };
+
+                return_values.push(head);
+            }
+            Instr::VarCar(offset) => {
+                let head = if let &LispValue::List(ref list) =
+                    return_values.get(stack_ref.stack_pointer + offset).unwrap()
+                {
+                    if let Some(elem) = list.last().cloned() {
+                        elem
+                    } else {
+                        return Err(EvaluationError::EmptyList);
+                    }
+                } else {
+                    return Err(EvaluationError::ArgumentTypeMismatch);
+                };
+
+                return_values.push(head);
+            }
             Instr::Recurse(arg_count) => {
                 let top_index = return_values.len() - arg_count;
                 return_values.splice(stack_ref.stack_pointer..top_index, iter::empty());
-                stack_ref.instr_pointer = { stack_ref.instr_slice.len() };
+                stack_ref.instr_pointer = stack_ref.instr_slice.len();
             }
             Instr::CreateLambda(scope, arg_count, ref body) => {
                 // If there are any references to function arguments in
@@ -344,21 +401,25 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                 return_values.push(value);
             }
             Instr::MoveArgument(offset) => {
-                let len = return_values.len();
-                return_values.push(LispValue::Boolean(false));
-                return_values.swap(stack_ref.stack_pointer + offset, len);
+                let val = replace(
+                    return_values
+                        .get_mut(stack_ref.stack_pointer + offset)
+                        .unwrap(),
+                    LispValue::Boolean(false),
+                );
+                return_values.push(val);
             }
             Instr::PushVariable(i) => {
                 return_values.push(state[i].clone());
             }
-            Instr::PopAndSet(ref var_name) => {
-                state.set_variable(var_name.clone(), return_values.pop().unwrap(), false)?;
+            Instr::PopAndSet(var_name) => {
+                state.set_variable(var_name, return_values.pop().unwrap(), false)?;
                 return_values.push(LispValue::List(Vec::new()));
             }
             // Pops a function off the value stack and applies it
             Instr::EvalFunction(arg_count, is_tail_call) => {
                 if let LispValue::Function(funk) = return_values.pop().unwrap() {
-                    match funk {
+                    let (next_func, push_stack) = match funk {
                         LispFunc::BuiltIn(b) => {
                             // The performance of this solution is basically horrendous,
                             // but all the performant solutions are super messy.
@@ -368,7 +429,7 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                                 vec![builtin_instr(b, arg_count)?],
                             );
 
-                            update_stacks = Some((func, true));
+                            (func, true)
                         }
                         LispFunc::Custom(f) => {
                             // // FIXME: DEBUGGING ONLY
@@ -398,11 +459,11 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                                     f,
                                     func_arg_count,
                                     arg_count,
-                                    &mut return_values[temp_stack..],
+                                    return_values.drain(temp_stack..),
                                 );
 
-                                return_values.truncate(temp_stack);
                                 return_values.push(LispValue::Function(continuation));
+                                continue;
                             }
                             // Exactly right number of arguments. Let's evaluate.
                             else if is_tail_call {
@@ -411,11 +472,21 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                                 return_values
                                     .splice(stack_ref.stack_pointer..top_index, iter::empty());
 
-                                update_stacks = Some((f, false));
+                                (f, false)
                             } else {
-                                update_stacks = Some((f, true));
+                                (f, true)
                             }
                         }
+                    };
+
+                    let next_arg_count = next_func.0.arg_count;
+                    let next_stack_ref =
+                        StackRef::new(next_func, return_values.len() - next_arg_count, state)?;
+
+                    if push_stack && stack_ref.instr_pointer != 0 {
+                        stax.push(replace(&mut stack_ref, next_stack_ref));
+                    } else {
+                        stack_ref = next_stack_ref;
                     }
                 } else {
                     return Err(EvaluationError::NonFunctionApplication);
@@ -426,48 +497,62 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                 let new_vec = return_values.split_off(len - arg_count);
                 return_values.push(LispValue::List(new_vec));
             }
-            Instr::Car => unitary_list(&mut return_values, |mut vec| match vec.pop() {
+            Instr::Car => unitary_list(&mut return_values, |vec| match vec.pop() {
                 Some(car) => Ok(car),
                 None => Err(EvaluationError::EmptyList),
             })?,
-            Instr::Cdr => unitary_list(&mut return_values, |mut vec| match vec.pop() {
-                Some(_) => Ok(LispValue::List(vec)),
-                None => Err(EvaluationError::EmptyList),
-            })?,
+            Instr::Cdr => {
+                if let &mut LispValue::List(ref mut v) = return_values.last_mut().unwrap() {
+                    if v.pop().is_none() {
+                        return Err(EvaluationError::EmptyList);
+                    }
+                } else {
+                    return Err(EvaluationError::ArgumentTypeMismatch);
+                };
+            }
             Instr::CheckNull => unitary_list(&mut return_values, |vec| {
                 Ok(LispValue::Boolean(vec.is_empty()))
             })?,
-            Instr::AddOne => unitary_int(&mut return_values, |i| Ok(LispValue::Integer(i + 1)))?,
-            Instr::SubOne => unitary_int(&mut return_values, |i| if i > 0 {
-                Ok(LispValue::Integer(i - 1))
-            } else {
-                Err(EvaluationError::SubZero)
-            })?,
-            Instr::Cons => if let LispValue::List(mut new_vec) = return_values.pop().unwrap() {
-                new_vec.push(return_values.pop().unwrap());
-                return_values.push(LispValue::List(new_vec));
-            } else {
-                return Err(EvaluationError::ArgumentTypeMismatch);
-            },
+            Instr::AddOne => {
+                if let &mut LispValue::Integer(ref mut i) = return_values.last_mut().unwrap() {
+                    *i += 1;
+                } else {
+                    return Err(EvaluationError::ArgumentTypeMismatch);
+                }
+            }
+            Instr::SubOne => {
+                if let &mut LispValue::Integer(ref mut i) = return_values.last_mut().unwrap() {
+                    if *i > 0 {
+                        *i -= 1;
+                    } else {
+                        return Err(EvaluationError::SubZero);
+                    }
+                } else {
+                    return Err(EvaluationError::ArgumentTypeMismatch);
+                }
+            }
+            Instr::Cons => {
+                let len = return_values.len();
+                let elt = return_values.swap_remove(len - 2);
+
+                if let &mut LispValue::List(ref mut new_vec) = return_values.last_mut().unwrap() {
+                    new_vec.push(elt);
+                } else {
+                    return Err(EvaluationError::ArgumentTypeMismatch);
+                }
+            }
             Instr::CheckZero => {
-                unitary_int(&mut return_values, |i| Ok(LispValue::Boolean(i == 0)))?
+                let reference = return_values.last_mut().unwrap();
+                let is_zero = if let &mut LispValue::Integer(i) = reference {
+                    i == 0
+                } else {
+                    return Err(EvaluationError::ArgumentTypeMismatch);
+                };
+                *reference = LispValue::Boolean(is_zero);
             }
             Instr::CheckType(arg_type) => {
                 let same_type = arg_type == return_values.pop().unwrap().get_type();
                 return_values.push(LispValue::Boolean(same_type));
-            }
-        }
-
-        // This solution is not very elegant, but it's necessary
-        // to please the borrowchecker in a safe manner.
-        if let Some((next_func, push_stack)) = update_stacks {
-            let next_arg_count = next_func.0.arg_count;
-            let mut next_stack_ref =
-                StackRef::new(next_func, return_values.len() - next_arg_count, state)?;
-            swap(&mut next_stack_ref, &mut stack_ref);
-
-            if push_stack {
-                stax.push(next_stack_ref);
             }
         }
     }

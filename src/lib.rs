@@ -3,7 +3,8 @@
 #![cfg_attr(test, feature(test))]
 #![feature(splice, slice_patterns)]
 
-extern crate petgraph;
+// extern crate petgraph;
+
 extern crate string_interner;
 #[cfg(test)]
 extern crate test;
@@ -11,9 +12,9 @@ extern crate test;
 pub mod parse;
 #[macro_use]
 pub mod evaluator;
-mod specialization;
+// mod specialization;
 
-use std::mem::{replace, swap, transmute_copy};
+use std::mem::{replace, transmute_copy};
 use std::convert::From;
 use std::fmt;
 use std::iter::repeat;
@@ -187,21 +188,21 @@ impl LispFunc {
         })))
     }
 
-    pub fn create_continuation(
+    pub fn create_continuation<I: Iterator<Item = LispValue>>(
         f: CustomFunc,
         total_args: usize,
         supplied_args: usize,
-        stack: &mut [LispValue],
+        args: I,
     ) -> LispFunc {
         let arg_count = total_args - supplied_args;
         let funk = Box::new(FinalizedExpr::Value(
             LispValue::Function(LispFunc::Custom(f)),
         ));
-        let arg_vec = (0..supplied_args)
-            .map(|i| FinalizedExpr::Value(replace(stack.get_mut(i).unwrap(), LispValue::Boolean(false))))
+        let arg_vec = args
+            .map(FinalizedExpr::Value)
             // TODO: check that we can get away with just taking the default scope
             // or whether we need to be more clever
-            .chain((0..total_args - supplied_args).map(|o| FinalizedExpr::Argument(o, Scope::default(), true)))
+            .chain((0..total_args - supplied_args).map(|o| FinalizedExpr::Argument(o, Scope::default(), MoveStatus::Unmoved)))
             .collect();
 
         Self::new_custom(
@@ -256,7 +257,7 @@ pub enum FinalizedExpr {
     Variable(InternedString),
     Value(LispValue),
     // Offset from stack pointer, scope level, moveable
-    Argument(usize, Scope, bool),
+    Argument(usize, Scope, MoveStatus),
     // function, arguments, tail-call, self-call
     FunctionCall(Box<FinalizedExpr>, Vec<FinalizedExpr>, bool, bool),
 }
@@ -265,11 +266,12 @@ impl FinalizedExpr {
     // Resolves references to function arguments. Used when creating closures.
     pub fn replace_args(&self, scope_level: Scope, stack: &mut [LispValue]) -> FinalizedExpr {
         match *self {
-            FinalizedExpr::Argument(index, arg_scope, is_move) if arg_scope < scope_level => {
-                if is_move {
-                    let mut dummy = LispValue::Boolean(false);
-                    swap(&mut dummy, &mut stack[index]);
-                    FinalizedExpr::Value(dummy)
+            FinalizedExpr::Argument(index, arg_scope, move_status) if arg_scope < scope_level => {
+                if move_status == MoveStatus::Unmoved {
+                    FinalizedExpr::Value(replace(
+                        stack.get_mut(index).unwrap(),
+                        LispValue::Boolean(false),
+                    ))
                 } else {
                     FinalizedExpr::Value(stack[index].clone())
                 }
@@ -303,9 +305,16 @@ impl FinalizedExpr {
 
     pub fn pretty_print(&self, state: &State, indent: usize) -> String {
         match *self {
-            FinalizedExpr::Argument(offset, scope, is_move) => {
-                format!("{}$({}, {})", if is_move { "m" } else { "" }, offset, scope)
-            }
+            FinalizedExpr::Argument(offset, scope, move_status) => format!(
+                "{}$({}, {})",
+                if move_status == MoveStatus::Unmoved {
+                    "m"
+                } else {
+                    ""
+                },
+                offset,
+                scope
+            ),
             FinalizedExpr::Value(ref v) => v.pretty_print(state, indent),
             FinalizedExpr::Variable(interned_name) => state.resolve_intern(interned_name).into(),
             FinalizedExpr::Cond(ref triple) => {
@@ -392,7 +401,7 @@ pub enum LispExpr {
 pub struct FinalizationContext {
     scope_level: Scope,
     // maps symbols to (scope_level, offset, moveable)
-    arguments: Vec<(InternedString, (Scope, usize, bool))>,
+    arguments: Vec<(InternedString, (Scope, usize, MoveStatus))>,
     can_tail_call: bool,
     own_name: Option<InternedString>,
 }
@@ -451,8 +460,12 @@ impl LispExpr {
                     .rev()
                     .filter(|&&mut (o, _)| o == n)
                     .next()
-                    .map(|&mut (_, (arg_scope, arg_offset, ref mut moveable))| {
-                        FinalizedExpr::Argument(arg_offset, arg_scope, replace(moveable, false))
+                    .map(|&mut (_, (arg_scope, arg_offset, ref mut move_status))| {
+                        FinalizedExpr::Argument(
+                            arg_offset,
+                            arg_scope,
+                            replace(move_status, MoveStatus::FullyMoved),
+                        )
                     })
                     .unwrap_or(FinalizedExpr::Variable(n))
             }
@@ -482,7 +495,7 @@ impl LispExpr {
                                     .iter_mut()
                                     .zip(false_expr_ctx.arguments.iter())
                             {
-                                *arg_true = *arg_true && arg_false;
+                                *arg_true = arg_false.combine(*arg_true);
                             }
 
                             ctx.can_tail_call = false;
@@ -509,12 +522,16 @@ impl LispExpr {
                                         _ => Err(EvaluationError::MalformedDefinition),
                                     }?;
 
-                                    ctx.arguments
-                                        .push((symbol, (ctx.scope_level, offset, true)));
+                                    ctx.arguments.push(
+                                        (symbol, (ctx.scope_level, offset, MoveStatus::Unmoved)),
+                                    );
                                 }
 
+                                // Update context for lambda
                                 let orig_scope_level = ctx.scope_level;
+                                let current_tail_status = ctx.can_tail_call;
                                 ctx.scope_level = ctx.scope_level.next();
+                                ctx.can_tail_call = true;
 
                                 let result = FinalizedExpr::Lambda(
                                     num_args,
@@ -522,7 +539,9 @@ impl LispExpr {
                                     Box::new(body.finalize(ctx)?),
                                 );
 
+                                // Reset context to original state
                                 ctx.scope_level = orig_scope_level;
+                                ctx.can_tail_call = current_tail_status;
                                 ctx.arguments.truncate(arguments_len);
 
                                 result
@@ -552,8 +571,7 @@ impl LispExpr {
                         // get to use the moves first.
                         let mut arg_finalized_expr = Vec::with_capacity(expr_iter.size_hint().0);
                         for e in expr_iter.rev() {
-                            let finalized = e.finalize(ctx)?;
-                            arg_finalized_expr.push(finalized);
+                            arg_finalized_expr.push(e.finalize(ctx)?);
                         }
                         arg_finalized_expr.reverse();
 
@@ -592,6 +610,24 @@ impl LispExpr {
                 result.push('}');
                 result
             }
+        }
+    }
+}
+
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub enum MoveStatus {
+    FullyMoved,
+    Unmoved,
+}
+
+impl MoveStatus {
+    fn combine(self, other: Self) -> Self {
+        if self == other {
+            self
+        } else if self == MoveStatus::Unmoved {
+            other
+        } else {
+            self
         }
     }
 }
@@ -732,8 +768,42 @@ mod tests {
                         Instr::AddOne,
                         Instr::MoveArgument(0),
                         Instr::CondJump(6),
-                        Instr::CheckZero,
-                        Instr::CloneArgument(1),
+                        Instr::VarCheckZero(1),
+                    ],
+                    unsafe { f.0.byte_code.get().as_ref().unwrap().clone() }
+                );
+            }
+            _ => panic!("expected function!"),
+        }
+    }
+
+    #[test]
+    fn map_bytecode() {
+        let mut state = State::default();
+        // Note, this is a gimped add that doesn't recurse so that we need not
+        // import StateIndex
+        let map = check_lisp(
+            &mut state,
+            vec![
+                "(define map (lambda (f xs) (cond (null? xs) xs (cons (f (car xs)) (list)))))",
+                "(map add1 (list 1 2 3))",
+                "(car (list map))",
+            ],
+        ).unwrap();
+
+        match map {
+            LispValue::Function(LispFunc::Custom(f)) => {
+                assert_eq!(
+                    vec![
+                        Instr::MoveArgument(1),
+                        Instr::Jump(1),
+                        Instr::Cons,
+                        Instr::List(0),
+                        Instr::EvalFunction(1, false),
+                        Instr::MoveArgument(0),
+                        Instr::VarCar(1),
+                        Instr::CondJump(6),
+                        Instr::VarCheckNull(1),
                     ],
                     unsafe { f.0.byte_code.get().as_ref().unwrap().clone() }
                 );
@@ -1128,6 +1198,36 @@ mod tests {
         }
 
         b.iter(|| check_lisp(&mut state, vec!["(curried-add 100 100)"]));
+    }
+
+    /// Benchmarks list intensive code
+    #[bench]
+    fn bench_arithmetic_sums(b: &mut super::test::Bencher) {
+        let mut state = State::default();
+        let init_commands = vec![
+            "(define > (lambda (x y) (cond (zero? x) #f (cond (zero? y) #t (> (sub1 x) (sub1 y))))))",
+            "(define add (lambda (x y) (cond (zero? y) x (add (add1 x) (sub1 y)))))",
+            "(define range (lambda (start end) (cond (> end start) (cons end (range start (sub1 end))) (list start))))",
+            "(define map2 (lambda (f l) (cond (null? l) l (cons (f (car (cdr (car l))) (car (car l))) (map2 f (cdr l))))))",
+            "(define foldr (lambda (xs f init) (cond (null? xs) init (foldr (cdr xs) f (f init (car xs))))))",
+            "(define zip (lambda (x y) (cond (or (null? x) (null? y)) (list) (cons (list (car x) (car y)) (zip (cdr x) (cdr y))))))",
+            "(define reverse (lambda (l) (cond (null? l) l (append (list (car l)) (reverse (cdr l))))))",
+            "(define append (lambda (l1 l2) (cond (null? l2) l1 (cons (car l2) (append l1 (cdr l2))))))",
+            "(define or (lambda (x y) (cond x #t y)))",
+        ];
+
+        for cmd in init_commands {
+            let expr = parse_lisp_string(cmd, &mut state).unwrap();
+            evaluator::eval(expr, &mut state).unwrap();
+        }
+
+        b.iter(|| {
+            let expr = parse_lisp_string(
+                "(foldr (map2 add (zip (range 1 50) (reverse (range 1 50)))) add 0)",
+                &mut state,
+            ).unwrap();
+            evaluator::eval(expr, &mut state).unwrap();
+        });
     }
 
     #[bench]
