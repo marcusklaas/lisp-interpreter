@@ -185,15 +185,19 @@ fn inner_compile(
     match expr {
         FinalizedExpr::Argument(offset, _scope, MoveStatus::Unmoved) => {
             instructions.push(Instr::MoveArgument(offset));
+            1
         }
         FinalizedExpr::Argument(offset, _scope, _move_status) => {
             instructions.push(Instr::CloneArgument(offset));
+            1
         }
         FinalizedExpr::Value(v) => {
             instructions.push(Instr::PushValue(v));
+            1
         }
         FinalizedExpr::Variable(n) => if let Some(i) = state.get_index(n) {
             instructions.push(Instr::PushVariable(i));
+            1
         } else {
             return Err(EvaluationError::UnknownVariable(
                 state.resolve_intern(n).into(),
@@ -252,8 +256,16 @@ fn inner_compile(
             for expr in args.into_iter().rev() {
                 inner_compile(expr, state, instructions)?;
             }
+
+            count
         }
-    }
+    })
+}
+
+pub fn compile_finalized_expr(expr: FinalizedExpr, state: &State) -> EvaluationResult<Vec<Instr>> {
+    let mut instructions = Vec::with_capacity(32);
+
+    inner_compile(expr, state, &mut instructions)?;
 
     Ok(())
 }
