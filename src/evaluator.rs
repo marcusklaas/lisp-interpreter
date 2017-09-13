@@ -1,6 +1,6 @@
 use super::{ArgType, BuiltIn, CustomFunc, EvaluationError, EvaluationResult, FinalizationContext,
             FinalizedExpr, InternedString, LispExpr, LispFunc, LispValue, Scope, TopExpr};
-use super::specialization;
+// use super::specialization;
 use std::collections::hash_map;
 use std::collections::HashMap;
 use std::iter;
@@ -287,7 +287,6 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
             }
         }
 
-        let mut update_stacks = None;
         stack_ref.instr_pointer -= 1;
 
         match stack_ref.instr_slice[stack_ref.instr_pointer] {
@@ -344,7 +343,7 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
             // Pops a function off the value stack and applies it
             Instr::EvalFunction(arg_count, is_tail_call) => {
                 if let LispValue::Function(funk) = return_values.pop().unwrap() {
-                    match funk {
+                    let (next_func, push_stack) = match funk {
                         LispFunc::BuiltIn(b) => {
                             // The performance of this solution is basically horrendous,
                             // but all the performant solutions are super messy.
@@ -354,7 +353,7 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                                 vec![builtin_instr(b, arg_count)?],
                             );
 
-                            update_stacks = Some((func, true));
+                            (func, true)
                         }
                         LispFunc::Custom(f) => {
                             // // FIXME: DEBUGGING ONLY
@@ -384,11 +383,11 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                                     f,
                                     func_arg_count,
                                     arg_count,
-                                    &mut return_values[temp_stack..],
+                                    return_values.drain(temp_stack..),
                                 );
 
-                                return_values.truncate(temp_stack);
                                 return_values.push(LispValue::Function(continuation));
+                                continue;
                             }
                             // Exactly right number of arguments. Let's evaluate.
                             else if is_tail_call {
@@ -397,11 +396,21 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                                 return_values
                                     .splice(stack_ref.stack_pointer..top_index, iter::empty());
 
-                                update_stacks = Some((f, false));
+                                (f, false)
                             } else {
-                                update_stacks = Some((f, true));
+                                (f, true)
                             }
                         }
+                    };
+
+                    let next_arg_count = next_func.0.arg_count;
+                    let next_stack_ref =
+                        StackRef::new(next_func, return_values.len() - next_arg_count, state)?;
+
+                    if push_stack && stack_ref.instr_pointer != 0 {
+                        stax.push(replace(&mut stack_ref, next_stack_ref));
+                    } else {
+                        stack_ref = next_stack_ref;
                     }
                 } else {
                     return Err(EvaluationError::NonFunctionApplication);
@@ -459,21 +468,6 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
             Instr::CheckType(arg_type) => {
                 let same_type = arg_type == return_values.pop().unwrap().get_type();
                 return_values.push(LispValue::Boolean(same_type));
-            }
-        }
-
-        // This solution is not very elegant, but it's necessary
-        // to please the borrowchecker in a safe manner.
-        if let Some((next_func, push_stack)) = update_stacks {
-            let not_last_instr = stack_ref.instr_pointer != 0;
-            let next_arg_count = next_func.0.arg_count;
-            let next_stack_ref =
-                StackRef::new(next_func, return_values.len() - next_arg_count, state)?;
-
-            if push_stack && not_last_instr {
-                stax.push(replace(&mut stack_ref, next_stack_ref));
-            } else {
-                stack_ref = next_stack_ref;
             }
         }
     }

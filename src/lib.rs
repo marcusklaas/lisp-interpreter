@@ -3,7 +3,8 @@
 #![cfg_attr(test, feature(test))]
 #![feature(splice, slice_patterns)]
 
-extern crate petgraph;
+// extern crate petgraph;
+
 extern crate string_interner;
 #[cfg(test)]
 extern crate test;
@@ -11,7 +12,7 @@ extern crate test;
 pub mod parse;
 #[macro_use]
 pub mod evaluator;
-mod specialization;
+// mod specialization;
 
 use std::mem::{replace, transmute_copy};
 use std::convert::From;
@@ -187,18 +188,18 @@ impl LispFunc {
         })))
     }
 
-    pub fn create_continuation(
+    pub fn create_continuation<I: Iterator<Item = LispValue>>(
         f: CustomFunc,
         total_args: usize,
         supplied_args: usize,
-        stack: &mut [LispValue],
+        args: I,
     ) -> LispFunc {
         let arg_count = total_args - supplied_args;
         let funk = Box::new(FinalizedExpr::Value(
             LispValue::Function(LispFunc::Custom(f)),
         ));
-        let arg_vec = (0..supplied_args)
-            .map(|i| FinalizedExpr::Value(replace(stack.get_mut(i).unwrap(), LispValue::Boolean(false))))
+        let arg_vec = args
+            .map(FinalizedExpr::Value)
             // TODO: check that we can get away with just taking the default scope
             // or whether we need to be more clever
             .chain((0..total_args - supplied_args).map(|o| FinalizedExpr::Argument(o, Scope::default(), true)))
