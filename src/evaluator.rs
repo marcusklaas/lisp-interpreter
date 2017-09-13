@@ -122,6 +122,12 @@ pub enum Instr {
     /// Pushes the car of the variable with given offset to the stack.
     /// This is functionally equivalent to [CloneArgument(offset), Car]
     VarCar(usize),
+    /// Checks whether a variable with given offset is zero and pushes
+    /// the result to the stack
+    VarCheckZero(usize),
+    /// Checks whether a variable with given offset is an empty list and
+    /// pushes the result to the stack
+    VarCheckNull(usize),
 }
 
 fn unitary_list<F: Fn(&mut Vec<LispValue>) -> EvaluationResult<LispValue>>(
@@ -210,26 +216,32 @@ fn inner_compile(
             instructions.push(Instr::CreateLambda(scope, arg_count, *body));
         }
         FinalizedExpr::FunctionCall(funk, args, is_tail_call, is_self_call) => {
-            let single_variable_arg = if let Some(&FinalizedExpr::Argument(_, _, _)) = args.get(0) {
-                args.len() == 1
-            } else {
-                false
-            };
-
-            if *funk ==
-                FinalizedExpr::Value(LispValue::Function(LispFunc::BuiltIn(BuiltIn::Car))) &&
-                single_variable_arg
-            {
-                // Inspection mode!
-                if let FinalizedExpr::Argument(offset, _scope, _move_status) = args[0] {
-                    instructions.push(Instr::VarCar(offset));
-                } else {
-                    unreachable!()
+            if let FinalizedExpr::Value(LispValue::Function(LispFunc::BuiltIn(bf))) = *funk {
+                match bf {
+                    BuiltIn::Car | BuiltIn::CheckNull | BuiltIn::CheckZero
+                        if {
+                            if let Some(&FinalizedExpr::Argument(_, _, _)) = args.get(0) {
+                                args.len() == 1
+                            } else {
+                                false
+                            }
+                        } =>
+                    {
+                        // Inspection mode!
+                        if let FinalizedExpr::Argument(offset, _scope, _move_status) = args[0] {
+                            instructions.push(match bf {
+                                BuiltIn::CheckNull => Instr::VarCheckNull(offset),
+                                BuiltIn::CheckZero => Instr::VarCheckZero(offset),
+                                BuiltIn::Car => Instr::VarCar(offset),
+                                _ => unreachable!(),
+                            });
+                            return Ok(());
+                        } else {
+                            unreachable!()
+                        }
+                    }
+                    f => instructions.push(builtin_instr(f, args.len())?),
                 }
-
-                return Ok(());
-            } else if let FinalizedExpr::Value(LispValue::Function(LispFunc::BuiltIn(f))) = *funk {
-                instructions.push(builtin_instr(f, args.len())?);
             } else if is_tail_call && is_self_call {
                 instructions.push(Instr::Recurse(args.len()));
             } else {
@@ -317,6 +329,28 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
         stack_ref.instr_pointer -= 1;
 
         match stack_ref.instr_slice[stack_ref.instr_pointer] {
+            Instr::VarCheckNull(offset) => {
+                let head = if let &LispValue::List(ref l) =
+                    return_values.get(stack_ref.stack_pointer + offset).unwrap()
+                {
+                    LispValue::Boolean(l.is_empty())
+                } else {
+                    return Err(EvaluationError::ArgumentTypeMismatch);
+                };
+
+                return_values.push(head);
+            }
+            Instr::VarCheckZero(offset) => {
+                let head = if let &LispValue::Integer(i) =
+                    return_values.get(stack_ref.stack_pointer + offset).unwrap()
+                {
+                    LispValue::Boolean(i == 0)
+                } else {
+                    return Err(EvaluationError::ArgumentTypeMismatch);
+                };
+
+                return_values.push(head);
+            }
             Instr::VarCar(offset) => {
                 let head = if let &LispValue::List(ref list) =
                     return_values.get(stack_ref.stack_pointer + offset).unwrap()

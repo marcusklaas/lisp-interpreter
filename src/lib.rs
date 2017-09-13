@@ -617,8 +617,6 @@ impl LispExpr {
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub enum MoveStatus {
     FullyMoved,
-    TailMoved,
-    HeadMoved,
     Unmoved,
 }
 
@@ -770,8 +768,7 @@ mod tests {
                         Instr::AddOne,
                         Instr::MoveArgument(0),
                         Instr::CondJump(6),
-                        Instr::CheckZero,
-                        Instr::CloneArgument(1),
+                        Instr::VarCheckZero(1),
                     ],
                     unsafe { f.0.byte_code.get().as_ref().unwrap().clone() }
                 );
@@ -785,7 +782,7 @@ mod tests {
         let mut state = State::default();
         // Note, this is a gimped add that doesn't recurse so that we need not
         // import StateIndex
-        let add = check_lisp(
+        let map = check_lisp(
             &mut state,
             vec![
                 "(define map (lambda (f xs) (cond (null? xs) xs (cons (f (car xs)) (list)))))",
@@ -794,7 +791,7 @@ mod tests {
             ],
         ).unwrap();
 
-        match add {
+        match map {
             LispValue::Function(LispFunc::Custom(f)) => {
                 assert_eq!(
                     vec![
@@ -806,8 +803,7 @@ mod tests {
                         Instr::MoveArgument(0),
                         Instr::VarCar(1),
                         Instr::CondJump(6),
-                        Instr::CheckNull,
-                        Instr::CloneArgument(1),
+                        Instr::VarCheckNull(1),
                     ],
                     unsafe { f.0.byte_code.get().as_ref().unwrap().clone() }
                 );
