@@ -120,14 +120,24 @@ pub enum Instr {
     CheckType(ArgType),
 }
 
-fn unitary_list<F: Fn(Vec<LispValue>) -> EvaluationResult<LispValue>>(
+fn unitary_list<F: Fn(&mut Vec<LispValue>) -> EvaluationResult<LispValue>>(
     stack: &mut Vec<LispValue>,
     f: F,
 ) -> EvaluationResult<()> {
-    match stack.pop().unwrap() {
-        LispValue::List(v) => Ok(stack.push(f(v)?)),
-        _ => Err(EvaluationError::ArgumentTypeMismatch),
-    }
+    let reference = stack.last_mut().unwrap();
+
+    *reference = if let &mut LispValue::List(ref mut v) = reference {
+        f(v)?
+    } else {
+        return Err(EvaluationError::ArgumentTypeMismatch);
+    };
+
+    Ok(())
+
+    // match stack.pop().unwrap() {
+    //     LispValue::List(v) => Ok(stack.push(f(v)?)),
+    //     _ => Err(EvaluationError::ArgumentTypeMismatch),
+    // }
 }
 
 #[macro_export]
@@ -421,14 +431,19 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                 let new_vec = return_values.split_off(len - arg_count);
                 return_values.push(LispValue::List(new_vec));
             }
-            Instr::Car => unitary_list(&mut return_values, |mut vec| match vec.pop() {
+            Instr::Car => unitary_list(&mut return_values, |vec| match vec.pop() {
                 Some(car) => Ok(car),
                 None => Err(EvaluationError::EmptyList),
             })?,
-            Instr::Cdr => unitary_list(&mut return_values, |mut vec| match vec.pop() {
-                Some(_) => Ok(LispValue::List(vec)),
-                None => Err(EvaluationError::EmptyList),
-            })?,
+            Instr::Cdr => {
+                if let &mut LispValue::List(ref mut v) = return_values.last_mut().unwrap() {
+                    if v.pop().is_none() {
+                        return Err(EvaluationError::EmptyList);
+                    }
+                } else {
+                    return Err(EvaluationError::ArgumentTypeMismatch);
+                };
+            }
             Instr::CheckNull => unitary_list(&mut return_values, |vec| {
                 Ok(LispValue::Boolean(vec.is_empty()))
             })?,
@@ -450,12 +465,16 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                     return Err(EvaluationError::ArgumentTypeMismatch);
                 }
             }
-            Instr::Cons => if let LispValue::List(mut new_vec) = return_values.pop().unwrap() {
-                new_vec.push(return_values.pop().unwrap());
-                return_values.push(LispValue::List(new_vec));
-            } else {
-                return Err(EvaluationError::ArgumentTypeMismatch);
-            },
+            Instr::Cons => {
+                let len = return_values.len();
+                let elt = return_values.swap_remove(len - 2);
+
+                if let &mut LispValue::List(ref mut new_vec) = return_values.last_mut().unwrap() {
+                    new_vec.push(elt);
+                } else {
+                    return Err(EvaluationError::ArgumentTypeMismatch);
+                }
+            }
             Instr::CheckZero => {
                 let reference = return_values.last_mut().unwrap();
                 let is_zero = if let &mut LispValue::Integer(i) = reference {

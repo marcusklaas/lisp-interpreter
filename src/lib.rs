@@ -1136,6 +1136,36 @@ mod tests {
         b.iter(|| check_lisp(&mut state, vec!["(curried-add 100 100)"]));
     }
 
+    /// Benchmarks list intensive code
+    #[bench]
+    fn bench_arithmetic_sums(b: &mut super::test::Bencher) {
+        let mut state = State::default();
+        let init_commands = vec![
+            "(define > (lambda (x y) (cond (zero? x) #f (cond (zero? y) #t (> (sub1 x) (sub1 y))))))",
+            "(define add (lambda (x y) (cond (zero? y) x (add (add1 x) (sub1 y)))))",
+            "(define range (lambda (start end) (cond (> end start) (cons end (range start (sub1 end))) (list start))))",
+            "(define map2 (lambda (f l) (cond (null? l) l (cons (f (car (cdr (car l))) (car (car l))) (map2 f (cdr l))))))",
+            "(define foldr (lambda (xs f init) (cond (null? xs) init (foldr (cdr xs) f (f init (car xs))))))",
+            "(define zip (lambda (x y) (cond (or (null? x) (null? y)) (list) (cons (list (car x) (car y)) (zip (cdr x) (cdr y))))))",
+            "(define reverse (lambda (l) (cond (null? l) l (append (list (car l)) (reverse (cdr l))))))",
+            "(define append (lambda (l1 l2) (cond (null? l2) l1 (cons (car l2) (append l1 (cdr l2))))))",
+            "(define or (lambda (x y) (cond x #t y)))",
+        ];
+
+        for cmd in init_commands {
+            let expr = parse_lisp_string(cmd, &mut state).unwrap();
+            evaluator::eval(expr, &mut state).unwrap();
+        }
+
+        b.iter(|| {
+            let expr = parse_lisp_string(
+                "(foldr (map2 add (zip (range 1 50) (reverse (range 1 50)))) add 0)",
+                &mut state,
+            ).unwrap();
+            evaluator::eval(expr, &mut state).unwrap();
+        });
+    }
+
     #[bench]
     fn bench_mult(b: &mut super::test::Bencher) {
         b.iter(|| {

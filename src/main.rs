@@ -24,6 +24,7 @@ const PRELUDE: &'static [&'static str] = &[
     "(define map2 (lambda (f l) (cond (null? l) l (cons (f (car (cdr (car l))) (car (car l))) (map2 f (cdr l))))))",
     "(define reverse (lambda (l) (cond (null? l) l (append (list (car l)) (reverse (cdr l))))))",
     "(define !! (lambda (l i) (cond (zero? i) (car l) (!! (cdr l) (sub1 i)))))",
+    "(define foldr (lambda (xs f init) (cond (null? xs) init (foldr (cdr xs) f (f init (car xs))))))",
 ];
 
 fn exec_command(s: &str, state: &mut State) {
