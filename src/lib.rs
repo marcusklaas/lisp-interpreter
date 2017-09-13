@@ -202,7 +202,7 @@ impl LispFunc {
             .map(FinalizedExpr::Value)
             // TODO: check that we can get away with just taking the default scope
             // or whether we need to be more clever
-            .chain((0..total_args - supplied_args).map(|o| FinalizedExpr::Argument(o, Scope::default(), true)))
+            .chain((0..total_args - supplied_args).map(|o| FinalizedExpr::Argument(o, Scope::default(), MoveStatus::Unmoved)))
             .collect();
 
         Self::new_custom(
@@ -257,7 +257,7 @@ pub enum FinalizedExpr {
     Variable(InternedString),
     Value(LispValue),
     // Offset from stack pointer, scope level, moveable
-    Argument(usize, Scope, bool),
+    Argument(usize, Scope, MoveStatus),
     // function, arguments, tail-call, self-call
     FunctionCall(Box<FinalizedExpr>, Vec<FinalizedExpr>, bool, bool),
 }
@@ -266,8 +266,8 @@ impl FinalizedExpr {
     // Resolves references to function arguments. Used when creating closures.
     pub fn replace_args(&self, scope_level: Scope, stack: &mut [LispValue]) -> FinalizedExpr {
         match *self {
-            FinalizedExpr::Argument(index, arg_scope, is_move) if arg_scope < scope_level => {
-                if is_move {
+            FinalizedExpr::Argument(index, arg_scope, move_status) if arg_scope < scope_level => {
+                if move_status == MoveStatus::Unmoved {
                     FinalizedExpr::Value(replace(
                         stack.get_mut(index).unwrap(),
                         LispValue::Boolean(false),
@@ -305,9 +305,16 @@ impl FinalizedExpr {
 
     pub fn pretty_print(&self, state: &State, indent: usize) -> String {
         match *self {
-            FinalizedExpr::Argument(offset, scope, is_move) => {
-                format!("{}$({}, {})", if is_move { "m" } else { "" }, offset, scope)
-            }
+            FinalizedExpr::Argument(offset, scope, move_status) => format!(
+                "{}$({}, {})",
+                if move_status == MoveStatus::Unmoved {
+                    "m"
+                } else {
+                    ""
+                },
+                offset,
+                scope
+            ),
             FinalizedExpr::Value(ref v) => v.pretty_print(state, indent),
             FinalizedExpr::Variable(interned_name) => state.resolve_intern(interned_name).into(),
             FinalizedExpr::Cond(ref triple) => {
@@ -394,7 +401,7 @@ pub enum LispExpr {
 pub struct FinalizationContext {
     scope_level: Scope,
     // maps symbols to (scope_level, offset, moveable)
-    arguments: Vec<(InternedString, (Scope, usize, bool))>,
+    arguments: Vec<(InternedString, (Scope, usize, MoveStatus))>,
     can_tail_call: bool,
     own_name: Option<InternedString>,
 }
@@ -453,8 +460,12 @@ impl LispExpr {
                     .rev()
                     .filter(|&&mut (o, _)| o == n)
                     .next()
-                    .map(|&mut (_, (arg_scope, arg_offset, ref mut moveable))| {
-                        FinalizedExpr::Argument(arg_offset, arg_scope, replace(moveable, false))
+                    .map(|&mut (_, (arg_scope, arg_offset, ref mut move_status))| {
+                        FinalizedExpr::Argument(
+                            arg_offset,
+                            arg_scope,
+                            replace(move_status, MoveStatus::FullyMoved),
+                        )
                     })
                     .unwrap_or(FinalizedExpr::Variable(n))
             }
@@ -484,7 +495,7 @@ impl LispExpr {
                                     .iter_mut()
                                     .zip(false_expr_ctx.arguments.iter())
                             {
-                                *arg_true = *arg_true && arg_false;
+                                *arg_true = arg_false.combine(*arg_true);
                             }
 
                             ctx.can_tail_call = false;
@@ -511,8 +522,9 @@ impl LispExpr {
                                         _ => Err(EvaluationError::MalformedDefinition),
                                     }?;
 
-                                    ctx.arguments
-                                        .push((symbol, (ctx.scope_level, offset, true)));
+                                    ctx.arguments.push(
+                                        (symbol, (ctx.scope_level, offset, MoveStatus::Unmoved)),
+                                    );
                                 }
 
                                 // Update context for lambda
@@ -598,6 +610,26 @@ impl LispExpr {
                 result.push('}');
                 result
             }
+        }
+    }
+}
+
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub enum MoveStatus {
+    FullyMoved,
+    TailMoved,
+    HeadMoved,
+    Unmoved,
+}
+
+impl MoveStatus {
+    fn combine(self, other: Self) -> Self {
+        if self == other {
+            self
+        } else if self == MoveStatus::Unmoved {
+            other
+        } else {
+            self
         }
     }
 }
@@ -739,6 +771,42 @@ mod tests {
                         Instr::MoveArgument(0),
                         Instr::CondJump(6),
                         Instr::CheckZero,
+                        Instr::CloneArgument(1),
+                    ],
+                    unsafe { f.0.byte_code.get().as_ref().unwrap().clone() }
+                );
+            }
+            _ => panic!("expected function!"),
+        }
+    }
+
+    #[test]
+    fn map_bytecode() {
+        let mut state = State::default();
+        // Note, this is a gimped add that doesn't recurse so that we need not
+        // import StateIndex
+        let add = check_lisp(
+            &mut state,
+            vec![
+                "(define map (lambda (f xs) (cond (null? xs) xs (cons (f (car xs)) (list)))))",
+                "(map add1 (list 1 2 3))",
+                "(car (list map))",
+            ],
+        ).unwrap();
+
+        match add {
+            LispValue::Function(LispFunc::Custom(f)) => {
+                assert_eq!(
+                    vec![
+                        Instr::MoveArgument(1),
+                        Instr::Jump(1),
+                        Instr::Cons,
+                        Instr::List(0),
+                        Instr::EvalFunction(1, false),
+                        Instr::MoveArgument(0),
+                        Instr::VarCar(1),
+                        Instr::CondJump(6),
+                        Instr::CheckNull,
                         Instr::CloneArgument(1),
                     ],
                     unsafe { f.0.byte_code.get().as_ref().unwrap().clone() }

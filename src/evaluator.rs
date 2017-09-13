@@ -1,5 +1,6 @@
 use super::{ArgType, BuiltIn, CustomFunc, EvaluationError, EvaluationResult, FinalizationContext,
-            FinalizedExpr, InternedString, LispExpr, LispFunc, LispValue, Scope, TopExpr};
+            FinalizedExpr, InternedString, LispExpr, LispFunc, LispValue, MoveStatus, Scope,
+            TopExpr};
 // use super::specialization;
 use std::collections::hash_map;
 use std::collections::HashMap;
@@ -118,6 +119,9 @@ pub enum Instr {
     CheckZero,
     CheckNull,
     CheckType(ArgType),
+    /// Pushes the car of the variable with given offset to the stack.
+    /// This is functionally equivalent to [CloneArgument(offset), Car]
+    VarCar(usize),
 }
 
 fn unitary_list<F: Fn(&mut Vec<LispValue>) -> EvaluationResult<LispValue>>(
@@ -133,11 +137,6 @@ fn unitary_list<F: Fn(&mut Vec<LispValue>) -> EvaluationResult<LispValue>>(
     };
 
     Ok(())
-
-    // match stack.pop().unwrap() {
-    //     LispValue::List(v) => Ok(stack.push(f(v)?)),
-    //     _ => Err(EvaluationError::ArgumentTypeMismatch),
-    // }
 }
 
 #[macro_export]
@@ -178,10 +177,10 @@ fn inner_compile(
     instructions: &mut Vec<Instr>,
 ) -> EvaluationResult<()> {
     match expr {
-        FinalizedExpr::Argument(offset, _scope, true) => {
+        FinalizedExpr::Argument(offset, _scope, MoveStatus::Unmoved) => {
             instructions.push(Instr::MoveArgument(offset));
         }
-        FinalizedExpr::Argument(offset, _scope, false) => {
+        FinalizedExpr::Argument(offset, _scope, _move_status) => {
             instructions.push(Instr::CloneArgument(offset));
         }
         FinalizedExpr::Value(v) => {
@@ -211,7 +210,25 @@ fn inner_compile(
             instructions.push(Instr::CreateLambda(scope, arg_count, *body));
         }
         FinalizedExpr::FunctionCall(funk, args, is_tail_call, is_self_call) => {
-            if let FinalizedExpr::Value(LispValue::Function(LispFunc::BuiltIn(f))) = *funk {
+            let single_variable_arg = if let Some(&FinalizedExpr::Argument(_, _, _)) = args.get(0) {
+                args.len() == 1
+            } else {
+                false
+            };
+
+            if *funk ==
+                FinalizedExpr::Value(LispValue::Function(LispFunc::BuiltIn(BuiltIn::Car))) &&
+                single_variable_arg
+            {
+                // Inspection mode!
+                if let FinalizedExpr::Argument(offset, _scope, _move_status) = args[0] {
+                    instructions.push(Instr::VarCar(offset));
+                } else {
+                    unreachable!()
+                }
+
+                return Ok(());
+            } else if let FinalizedExpr::Value(LispValue::Function(LispFunc::BuiltIn(f))) = *funk {
                 instructions.push(builtin_instr(f, args.len())?);
             } else if is_tail_call && is_self_call {
                 instructions.push(Instr::Recurse(args.len()));
@@ -300,6 +317,21 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
         stack_ref.instr_pointer -= 1;
 
         match stack_ref.instr_slice[stack_ref.instr_pointer] {
+            Instr::VarCar(offset) => {
+                let head = if let &LispValue::List(ref list) =
+                    return_values.get(stack_ref.stack_pointer + offset).unwrap()
+                {
+                    if let Some(elem) = list.last().cloned() {
+                        elem
+                    } else {
+                        return Err(EvaluationError::EmptyList);
+                    }
+                } else {
+                    return Err(EvaluationError::ArgumentTypeMismatch);
+                };
+
+                return_values.push(head);
+            }
             Instr::Recurse(arg_count) => {
                 let top_index = return_values.len() - arg_count;
                 return_values.splice(stack_ref.stack_pointer..top_index, iter::empty());
