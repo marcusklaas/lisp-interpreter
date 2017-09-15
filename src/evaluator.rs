@@ -129,6 +129,8 @@ pub enum Instr {
     /// Checks whether a variable with given offset is an empty list and
     /// pushes the result to the stack
     VarCheckNull(usize),
+    /// Increments variable at given offset
+    VarAddOne(usize),
 
     /// The most optimized instruction of all. Checks if the variable with
     /// given offset is zero. Jumps if it is, decrements it otherwise.
@@ -231,6 +233,16 @@ fn inner_compile(
                         if args.len() == 1 && false_expr.only_use_after_sub(offset, scope, false) {
                             let new_false_expr = false_expr.remove_subs_of(offset, scope);
                             inner_compile(new_false_expr, state, instructions)?;
+
+                            // FIXME: remove duplication!!!
+                            let remove_jump = match instructions[before_len + 1] {
+                                Instr::EvalFunction(_, true) | Instr::Recurse(..) => true,
+                                _ => false,
+                            };
+                            if remove_jump {
+                                instructions.remove(before_len);
+                            }
+
                             let jump_size = instructions.len() - before_len;
                             instructions.push(Instr::CondZeroJumpDecr(offset, jump_size));
 
@@ -241,6 +253,15 @@ fn inner_compile(
             }
 
             inner_compile(false_expr, state, instructions)?;
+
+            let remove_jump = match instructions[before_len + 1] {
+                Instr::EvalFunction(_, true) | Instr::Recurse(..) => true,
+                _ => false,
+            };
+            if remove_jump {
+                instructions.remove(before_len);
+            }
+
             let jump_size = instructions.len() - before_len;
             instructions.push(Instr::CondJump(jump_size));
             inner_compile(test, state, instructions)?;
@@ -250,33 +271,63 @@ fn inner_compile(
         }
         FinalizedExpr::FunctionCall(funk, args, is_tail_call, is_self_call) => {
             if let FinalizedExpr::Value(LispValue::Function(LispFunc::BuiltIn(bf))) = *funk {
-                match bf {
-                    BuiltIn::Car | BuiltIn::CheckNull | BuiltIn::CheckZero
-                        if {
-                            if let Some(&FinalizedExpr::Argument(_, _, _)) = args.get(0) {
-                                args.len() == 1
-                            } else {
-                                false
-                            }
-                        } =>
+                let single_variable =
+                    if let Some(&FinalizedExpr::Argument(offset, _scope, move_status)) = args.get(0)
                     {
-                        // Inspection mode!
-                        if let FinalizedExpr::Argument(offset, _scope, _move_status) = args[0] {
-                            instructions.push(match bf {
-                                BuiltIn::CheckNull => Instr::VarCheckNull(offset),
-                                BuiltIn::CheckZero => Instr::VarCheckZero(offset),
-                                BuiltIn::Car => Instr::VarCar(offset),
-                                _ => unreachable!(),
-                            });
-                            return Ok(());
+                        if args.len() == 1 {
+                            Some((offset, move_status))
                         } else {
-                            unreachable!()
+                            None
                         }
+                    } else {
+                        None
+                    };
+
+                match (bf, single_variable) {
+                    (BuiltIn::Car, Some((offset, ..))) |
+                    (BuiltIn::CheckNull, Some((offset, ..))) |
+                    (BuiltIn::CheckZero, Some((offset, ..))) => {
+                        // Inspection mode!
+                        instructions.push(match bf {
+                            BuiltIn::CheckNull => Instr::VarCheckNull(offset),
+                            BuiltIn::CheckZero => Instr::VarCheckZero(offset),
+                            BuiltIn::Car => Instr::VarCar(offset),
+                            _ => unreachable!(),
+                        });
+                        return Ok(());
                     }
-                    f => instructions.push(builtin_instr(f, args.len())?),
+                    (BuiltIn::AddOne, Some((offset, MoveStatus::Unmoved))) => {
+                        instructions.push(Instr::MoveArgument(offset));
+                        instructions.push(Instr::VarAddOne(offset));
+                        return Ok(());
+                    }
+                    (f, _) => instructions.push(builtin_instr(f, args.len())?),
                 }
             } else if is_tail_call && is_self_call {
-                instructions.push(Instr::Recurse(args.len()));
+                // TODO: add elision of argument copies for tail calls also
+                let args_len = args.len();
+                instructions.push(Instr::Recurse(args_len));
+                let init_len = instructions.len();
+                let mut num_skip = 0;
+                let mut skippable = true;
+
+                for (idx, expr) in args.into_iter().enumerate().rev() {
+                    let arg_instr_start = instructions.len();
+                    inner_compile(expr, state, instructions)?;
+
+                    skippable = skippable &&
+                        if let Instr::MoveArgument(offset) = instructions[arg_instr_start] {
+                            num_skip += 1;
+                            instructions.remove(arg_instr_start);
+                            idx == offset
+                        } else {
+                            false
+                        };
+                }
+
+                instructions[init_len - 1] = Instr::Recurse(args_len - num_skip);
+
+                return Ok(());
             } else {
                 instructions.push(Instr::EvalFunction(args.len(), is_tail_call));
                 inner_compile(*funk, state, instructions)?;
@@ -362,6 +413,14 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
         stack_ref.instr_pointer -= 1;
 
         match stack_ref.instr_slice[stack_ref.instr_pointer] {
+            Instr::VarAddOne(offset) => if let &mut LispValue::Integer(ref mut i) = return_values
+                .get_mut(stack_ref.stack_pointer + offset)
+                .unwrap()
+            {
+                *i += 1;
+            } else {
+                return Err(EvaluationError::ArgumentTypeMismatch);
+            },
             Instr::CondZeroJumpDecr(offset, jump_size) => {
                 if let &mut LispValue::Integer(ref mut i) = return_values
                     .get_mut(stack_ref.stack_pointer + offset)
@@ -414,8 +473,12 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                 return_values.push(head);
             }
             Instr::Recurse(arg_count) => {
-                let top_index = return_values.len() - arg_count;
-                return_values.splice(stack_ref.stack_pointer..top_index, iter::empty());
+                if arg_count > 0 {
+                    let bottom_index =
+                        stack_ref.stack_pointer + stack_ref.func.0.arg_count - arg_count;
+                    let top_index = bottom_index + arg_count;
+                    return_values.splice(bottom_index..top_index, iter::empty());
+                }
                 stack_ref.instr_pointer = stack_ref.instr_slice.len();
             }
             Instr::CreateLambda(scope, arg_count, ref body) => {

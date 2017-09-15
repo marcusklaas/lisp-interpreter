@@ -827,12 +827,9 @@ mod tests {
                 assert_eq!(
                     vec![
                         Instr::MoveArgument(0),
-                        Instr::Jump(1),
-                        Instr::Recurse(2),
-                        Instr::MoveArgument(1),
-                        Instr::AddOne,
-                        Instr::MoveArgument(0),
-                        Instr::CondZeroJumpDecr(1, 5),
+                        Instr::Recurse(0),
+                        Instr::VarAddOne(0),
+                        Instr::CondZeroJumpDecr(1, 2),
                     ],
                     unsafe { f.0.byte_code.get().as_ref().unwrap().clone() }
                 );
@@ -875,6 +872,9 @@ mod tests {
             _ => panic!("expected function!"),
         }
     }
+
+    // TODO: add test for partial copy recursive functions. filter is such an
+    // example, but it's not immediatly clear
 
     #[test]
     fn shadowing() {
