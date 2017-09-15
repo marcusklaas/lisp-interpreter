@@ -263,6 +263,72 @@ pub enum FinalizedExpr {
 }
 
 impl FinalizedExpr {
+    pub fn remove_subs_of(self, offset: usize, scope: Scope) -> Self {
+        match self {
+            FinalizedExpr::FunctionCall(f, args, tail_call, self_call) => {
+                if let FinalizedExpr::Value(
+                    LispValue::Function(LispFunc::BuiltIn(BuiltIn::SubOne)),
+                ) = *f
+                {
+                    if let Some(&FinalizedExpr::Argument(e_offset, e_scope, _)) = args.get(0) {
+                        if args.len() == 1 && offset == e_offset && e_scope == scope {
+                            return args.into_iter().next().unwrap();
+                        }
+                    }
+                }
+
+                FinalizedExpr::FunctionCall(
+                    Box::new(f.remove_subs_of(offset, scope)),
+                    args.into_iter()
+                        .map(|a| a.remove_subs_of(offset, scope))
+                        .collect(),
+                    tail_call,
+                    self_call,
+                )
+            }
+            FinalizedExpr::Cond(boks) => {
+                let triple = *boks;
+                let (test, true_expr, false_expr) = triple;
+
+                FinalizedExpr::Cond(Box::new((
+                    test.remove_subs_of(offset, scope),
+                    true_expr.remove_subs_of(offset, scope),
+                    false_expr.remove_subs_of(offset, scope),
+                )))
+            }
+            FinalizedExpr::Lambda(a, b, body) => {
+                FinalizedExpr::Lambda(a, b, Box::new(body.remove_subs_of(offset, scope)))
+            }
+            x => x,
+        }
+    }
+
+    pub fn only_use_after_sub(&self, offset: usize, scope: Scope, parent_sub: bool) -> bool {
+        match *self {
+            FinalizedExpr::Argument(e_offset, e_scope, _move) => {
+                e_offset != offset || e_scope != scope || parent_sub
+            }
+            FinalizedExpr::Cond(ref boks) => {
+                let (ref test, ref true_expr, ref false_expr) = **boks;
+                test.only_use_after_sub(offset, scope, false) &&
+                    true_expr.only_use_after_sub(offset, scope, false) &&
+                    false_expr.only_use_after_sub(offset, scope, false)
+            }
+            FinalizedExpr::Variable(..) => true,
+            FinalizedExpr::Value(..) => true,
+            FinalizedExpr::Lambda(_, _, ref body) => body.only_use_after_sub(offset, scope, false),
+            FinalizedExpr::FunctionCall(ref f, ref args, _, _) => {
+                let is_sub = &FinalizedExpr::Value(
+                    LispValue::Function(LispFunc::BuiltIn(BuiltIn::SubOne)),
+                ) == &**f;
+
+                f.only_use_after_sub(offset, scope, is_sub) &&
+                    args.iter()
+                        .all(|a| a.only_use_after_sub(offset, scope, is_sub))
+            }
+        }
+    }
+
     // Resolves references to function arguments. Used when creating closures.
     pub fn replace_args(&self, scope_level: Scope, stack: &mut [LispValue]) -> FinalizedExpr {
         match *self {
@@ -763,12 +829,10 @@ mod tests {
                         Instr::MoveArgument(0),
                         Instr::Jump(1),
                         Instr::Recurse(2),
-                        Instr::SubOne,
                         Instr::MoveArgument(1),
                         Instr::AddOne,
                         Instr::MoveArgument(0),
-                        Instr::CondJump(6),
-                        Instr::VarCheckZero(1),
+                        Instr::CondZeroJumpDecr(1, 5),
                     ],
                     unsafe { f.0.byte_code.get().as_ref().unwrap().clone() }
                 );
@@ -948,6 +1012,14 @@ mod tests {
                 "(list (fun? #t) (fun? fun?) (fun? 0) (fun? bool?) (fun? (lambda (x) #t)) (fun? #t))",
             ],
             "(#f #t #f #t #t #f)",
+        );
+    }
+
+    #[test]
+    fn check_use_var_after_cond_zero() {
+        check_lisp_ok(
+            vec!["(define f (lambda (x) (cond (zero? x) x x)))", "(f 1)"],
+            "1",
         );
     }
 

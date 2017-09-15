@@ -119,6 +119,7 @@ pub enum Instr {
     CheckZero,
     CheckNull,
     CheckType(ArgType),
+
     /// Pushes the car of the variable with given offset to the stack.
     /// This is functionally equivalent to [CloneArgument(offset), Car]
     VarCar(usize),
@@ -128,6 +129,11 @@ pub enum Instr {
     /// Checks whether a variable with given offset is an empty list and
     /// pushes the result to the stack
     VarCheckNull(usize),
+
+    /// The most optimized instruction of all. Checks if the variable with
+    /// given offset is zero. Jumps if it is, decrements it otherwise.
+    /// Params mean (variable_offset, jump_size)
+    CondZeroJumpDecr(usize, usize),
 }
 
 fn unitary_list<F: Fn(&mut Vec<LispValue>) -> EvaluationResult<LispValue>>(
@@ -207,6 +213,33 @@ fn inner_compile(
             let jump_size = instructions.len() - before_len;
             let before_len = instructions.len();
             instructions.push(Instr::Jump(jump_size));
+
+            if let FinalizedExpr::FunctionCall(ref f_box, ref args, ..) = test {
+                if let FinalizedExpr::Value(
+                    LispValue::Function(LispFunc::BuiltIn(BuiltIn::CheckZero)),
+                ) = **f_box
+                {
+                    if let Some(&FinalizedExpr::Argument(offset, scope, _)) = args.get(0) {
+                        // OK, so at this point we know we are jumping conditionally
+                        // on whether a function arg is zero.
+                        // Next: make sure that every use of this argument in the false branch
+                        // is within a sub1 call.
+                        // If this is the case, replace all these sub1 calls by uses
+                        // of the argument itself (maintaining its move status!).
+                        // Then, encode the conditional jump, zero check and decrement using
+                        // a single, superspecialized instruction.
+                        if args.len() == 1 && false_expr.only_use_after_sub(offset, scope, false) {
+                            let new_false_expr = false_expr.remove_subs_of(offset, scope);
+                            inner_compile(new_false_expr, state, instructions)?;
+                            let jump_size = instructions.len() - before_len;
+                            instructions.push(Instr::CondZeroJumpDecr(offset, jump_size));
+
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+
             inner_compile(false_expr, state, instructions)?;
             let jump_size = instructions.len() - before_len;
             instructions.push(Instr::CondJump(jump_size));
@@ -329,6 +362,20 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
         stack_ref.instr_pointer -= 1;
 
         match stack_ref.instr_slice[stack_ref.instr_pointer] {
+            Instr::CondZeroJumpDecr(offset, jump_size) => {
+                if let &mut LispValue::Integer(ref mut i) = return_values
+                    .get_mut(stack_ref.stack_pointer + offset)
+                    .unwrap()
+                {
+                    if *i == 0 {
+                        stack_ref.instr_pointer -= jump_size;
+                    } else {
+                        *i -= 1;
+                    }
+                } else {
+                    return Err(EvaluationError::ArgumentTypeMismatch);
+                }
+            }
             Instr::VarCheckNull(offset) => {
                 let head = if let &LispValue::List(ref l) =
                     return_values.get(stack_ref.stack_pointer + offset).unwrap()
