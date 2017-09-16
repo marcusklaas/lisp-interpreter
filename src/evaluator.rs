@@ -87,8 +87,9 @@ pub enum Instr {
     /// at the top of the stack
     Recurse(usize),
     /// Evaluates the function at the top of the stack with given number of arguments.
-    /// The booleans indicates whether this is a tail call
-    EvalFunction(usize, bool),
+    /// The second parameter indicates whether this is a tail call, and if so, whether
+    /// we can skip reuse the arguments
+    EvalFunction(usize, Option<bool>),
     /// Pops a value from the stack and adds it to the state at the given name
     PopAndSet(InternedString),
     /// Creates a custom function with given (scope level, argument count, function body) and pushes
@@ -216,6 +217,16 @@ fn inner_compile(
             let before_len = instructions.len();
             instructions.push(Instr::Jump(jump_size));
 
+            fn remove_jump_after_tail_call(instructions: &mut Vec<Instr>, jump_location: usize) {
+                let remove_jump = match instructions[jump_location + 1] {
+                    Instr::EvalFunction(_, Some(_)) | Instr::Recurse(..) => true,
+                    _ => false,
+                };
+                if remove_jump {
+                    instructions.remove(jump_location);
+                }
+            }
+
             if let FinalizedExpr::FunctionCall(ref f_box, ref args, ..) = test {
                 if let FinalizedExpr::Value(
                     LispValue::Function(LispFunc::BuiltIn(BuiltIn::CheckZero)),
@@ -233,16 +244,7 @@ fn inner_compile(
                         if args.len() == 1 && false_expr.only_use_after_sub(offset, scope, false) {
                             let new_false_expr = false_expr.remove_subs_of(offset, scope);
                             inner_compile(new_false_expr, state, instructions)?;
-
-                            // FIXME: remove duplication!!!
-                            let remove_jump = match instructions[before_len + 1] {
-                                Instr::EvalFunction(_, true) | Instr::Recurse(..) => true,
-                                _ => false,
-                            };
-                            if remove_jump {
-                                instructions.remove(before_len);
-                            }
-
+                            remove_jump_after_tail_call(instructions, before_len);
                             let jump_size = instructions.len() - before_len;
                             instructions.push(Instr::CondZeroJumpDecr(offset, jump_size));
 
@@ -253,14 +255,7 @@ fn inner_compile(
             }
 
             inner_compile(false_expr, state, instructions)?;
-
-            let remove_jump = match instructions[before_len + 1] {
-                Instr::EvalFunction(_, true) | Instr::Recurse(..) => true,
-                _ => false,
-            };
-            if remove_jump {
-                instructions.remove(before_len);
-            }
+            remove_jump_after_tail_call(instructions, before_len);
 
             let jump_size = instructions.len() - before_len;
             instructions.push(Instr::CondJump(jump_size));
@@ -303,33 +298,60 @@ fn inner_compile(
                     }
                     (f, _) => instructions.push(builtin_instr(f, args.len())?),
                 }
-            } else if is_tail_call && is_self_call {
-                // TODO: add elision of argument copies for tail calls also
+            } else if is_tail_call {
+                // TODO: clean this mess up!!
                 let args_len = args.len();
-                instructions.push(Instr::Recurse(args_len));
                 let init_len = instructions.len();
+
+                if is_self_call {
+                    instructions.push(Instr::Recurse(args_len));
+                } else {
+                    instructions.push(Instr::EvalFunction(args_len, Some(false)));
+                    inner_compile(*funk, state, instructions)?;
+                }
+
+                let arg_instr_vecs: Vec<_> = args.into_iter()
+                    .map(|expr| {
+                        let mut sub_buf = Vec::new();
+                        inner_compile(expr, state, &mut sub_buf)?;
+                        Ok(sub_buf)
+                    })
+                    .collect::<Result<_, _>>()?;
+
                 let mut num_skip = 0;
-                let mut skippable = true;
-
-                for (idx, expr) in args.into_iter().enumerate().rev() {
-                    let arg_instr_start = instructions.len();
-                    inner_compile(expr, state, instructions)?;
-
-                    skippable = skippable &&
-                        if let Instr::MoveArgument(offset) = instructions[arg_instr_start] {
-                            num_skip += 1;
-                            instructions.remove(arg_instr_start);
+                let mut skippable = is_self_call ||
+                    arg_instr_vecs.iter().enumerate().rev().all(
+                        |(idx, buf)| if let Instr::MoveArgument(offset) = buf[0] {
                             idx == offset
                         } else {
                             false
-                        };
+                        },
+                    );
+
+                for (idx, mut buf) in arg_instr_vecs.into_iter().enumerate().rev() {
+                    skippable = skippable && if let Instr::MoveArgument(offset) = buf[0] {
+                        idx == offset
+                    } else {
+                        false
+                    };
+
+                    if skippable {
+                        num_skip += 1;
+                        instructions.extend(buf.drain(1..));
+                    } else {
+                        instructions.extend(buf.into_iter());
+                    }
                 }
 
-                instructions[init_len - 1] = Instr::Recurse(args_len - num_skip);
+                if is_self_call {
+                    instructions[init_len] = Instr::Recurse(args_len - num_skip);
+                } else if num_skip == args_len {
+                    instructions[init_len] = Instr::EvalFunction(args_len, Some(true));
+                }
 
                 return Ok(());
             } else {
-                instructions.push(Instr::EvalFunction(args.len(), is_tail_call));
+                instructions.push(Instr::EvalFunction(args.len(), None));
                 inner_compile(*funk, state, instructions)?;
             };
 
@@ -474,9 +496,8 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
             }
             Instr::Recurse(arg_count) => {
                 if arg_count > 0 {
-                    let bottom_index =
-                        stack_ref.stack_pointer + stack_ref.func.0.arg_count - arg_count;
-                    let top_index = bottom_index + arg_count;
+                    let top_index = stack_ref.stack_pointer + stack_ref.func.0.arg_count;
+                    let bottom_index = top_index - arg_count;
                     return_values.splice(bottom_index..top_index, iter::empty());
                 }
                 stack_ref.instr_pointer = stack_ref.instr_slice.len();
@@ -527,7 +548,7 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                 return_values.push(LispValue::List(Vec::new()));
             }
             // Pops a function off the value stack and applies it
-            Instr::EvalFunction(arg_count, is_tail_call) => {
+            Instr::EvalFunction(arg_count, tail_call_args) => {
                 if let LispValue::Function(funk) = return_values.pop().unwrap() {
                     let (next_func, push_stack) = match funk {
                         LispFunc::BuiltIn(b) => {
@@ -576,11 +597,13 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                                 continue;
                             }
                             // Exactly right number of arguments. Let's evaluate.
-                            else if is_tail_call {
-                                // Remove old arguments of the stack.
-                                let top_index = return_values.len() - arg_count;
-                                return_values
-                                    .splice(stack_ref.stack_pointer..top_index, iter::empty());
+                            else if let Some(reuse_args) = tail_call_args {
+                                if !reuse_args {
+                                    // Remove old arguments of the stack.
+                                    let top_index = return_values.len() - arg_count;
+                                    let bottom_index = stack_ref.stack_pointer;
+                                    return_values.splice(bottom_index..top_index, iter::empty());
+                                }
 
                                 (f, false)
                             } else {

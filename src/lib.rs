@@ -860,7 +860,7 @@ mod tests {
                         Instr::Jump(1),
                         Instr::Cons,
                         Instr::List(0),
-                        Instr::EvalFunction(1, false),
+                        Instr::EvalFunction(1, None),
                         Instr::MoveArgument(0),
                         Instr::VarCar(1),
                         Instr::CondJump(6),
@@ -1219,6 +1219,8 @@ mod tests {
         );
     }
 
+    // TODO: add test for non-copying TCO
+
     #[test]
     fn range() {
         check_lisp_ok(
@@ -1271,6 +1273,23 @@ mod tests {
 
         b.iter(|| check_lisp(&mut state, vec!["(curried-add 100 100)"]));
     }
+
+    #[bench]
+    fn bench_mutual_recursion(b: &mut super::test::Bencher) {
+        let mut state = State::default();
+        let init_commands = vec![
+            "(define <' (lambda (x y) (cond (zero? y) #f (< x (sub1 y)))))",
+            "(define < (lambda (x y) (cond (zero? x) (cond (zero? y) #f #t) (<' (sub1 x) y))))",
+        ];
+
+        for cmd in init_commands {
+            let expr = parse_lisp_string(cmd, &mut state).unwrap();
+            evaluator::eval(expr, &mut state).unwrap();
+        }
+
+        b.iter(|| check_lisp(&mut state, vec!["(< 10000 10000)"]));
+    }
+
 
     /// Benchmarks list intensive code
     #[bench]
