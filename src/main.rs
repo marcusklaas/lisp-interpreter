@@ -4,7 +4,7 @@
 extern crate rustyline;
 extern crate yalp;
 
-use yalp::evaluator::State;
+use yalp::State;
 use yalp::parse::parse_lisp_string;
 
 const PRELUDE: &'static [&'static str] = &[
@@ -32,13 +32,15 @@ fn exec_command(s: &str, state: &mut State) {
     let last_intern = state.intern(":last");
 
     match parse_result {
-        Ok(expr) => match yalp::evaluator::eval(expr, state) {
-            Ok(val) => {
-                println!("{}", val.pretty_print(state, 0));
-                state.set_variable(last_intern, val, true).unwrap();
+        Ok(expr) => {
+            match yalp::evaluator::eval(expr, state) {
+                Ok(val) => {
+                    println!("{}", val.pretty_print(state, 0));
+                    state.set_variable(last_intern, val, true).unwrap();
+                }
+                Err(eval_err) => println!("Evaluation error: {:?}", eval_err),
             }
-            Err(eval_err) => println!("Evaluation error: {:?}", eval_err),
-        },
+        }
         Err(ref parse_err) => {
             println!("Parse error: {:?}", parse_err);
         }
@@ -54,8 +56,9 @@ fn main() {
         for def in PRELUDE {
             let parse_res =
                 parse_lisp_string(def, &mut state).expect("Prelude statement failed to parse!");
-            yalp::evaluator::eval(parse_res, &mut state)
-                .expect("Prelude statement failed to execute!");
+            yalp::evaluator::eval(parse_res, &mut state).expect(
+                "Prelude statement failed to execute!",
+            );
         }
     }
 

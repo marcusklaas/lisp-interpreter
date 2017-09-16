@@ -17,16 +17,14 @@ enum Token {
     OpVar(String),
 }
 
-// Token Iterator.
+/// Token Iterator
 struct Tokens<'a> {
     chars: Peekable<Chars<'a>>,
 }
 
 impl<'x> Tokens<'x> {
     fn from_str(literal: &str) -> Tokens {
-        Tokens {
-            chars: literal.chars().peekable(),
-        }
+        Tokens { chars: literal.chars().peekable() }
     }
 }
 
@@ -64,7 +62,6 @@ impl<'a> Iterator for Tokens<'a> {
         }
 
         while let Some(c) = self.chars.next() {
-            // FIXME: this reads poorly
             return match c {
                 '(' => Some(Token::OpenParen),
                 ')' => Some(Token::CloseParen),
@@ -102,17 +99,19 @@ fn parse_lisp(tokens: &mut Tokens, state: &mut State) -> Result<Vec<LispExpr>, P
             Token::OpenParen => LispExpr::Call(parse_lisp(tokens, state)?),
             Token::CloseParen => return Ok(stack),
             Token::Integer(l) => LispExpr::Value(LispValue::Integer(l)),
-            Token::OpVar(o) => if let Some(mac) = LispMacro::from_str(&o) {
-                LispExpr::Macro(mac)
-            } else if let Some(built_in) = BuiltIn::from_str(&o) {
-                LispExpr::Value(LispValue::Function(LispFunc::BuiltIn(built_in)))
-            } else if o == "#t" {
-                LispExpr::Value(LispValue::Boolean(true))
-            } else if o == "#f" {
-                LispExpr::Value(LispValue::Boolean(false))
-            } else {
-                LispExpr::OpVar(state.intern(o))
-            },
+            Token::OpVar(o) => {
+                if let Some(mac) = LispMacro::from_str(&o) {
+                    LispExpr::Macro(mac)
+                } else if let Some(built_in) = BuiltIn::from_str(&o) {
+                    LispExpr::Value(LispValue::Function(LispFunc::BuiltIn(built_in)))
+                } else if o == "#t" {
+                    LispExpr::Value(LispValue::Boolean(true))
+                } else if o == "#f" {
+                    LispExpr::Value(LispValue::Boolean(false))
+                } else {
+                    LispExpr::OpVar(state.intern(o))
+                }
+            }
         };
         stack.push(next_token);
     }
@@ -151,7 +150,9 @@ mod tests {
         let expected = Ok(LispExpr::Call(vec![
             LispExpr::Macro(LispMacro::Lambda),
             LispExpr::Call(vec![
-                LispExpr::Value(LispValue::Function(LispFunc::BuiltIn(BuiltIn::List))),
+                LispExpr::Value(LispValue::Function(
+                    LispFunc::BuiltIn(BuiltIn::List),
+                )),
                 LispExpr::Value(LispValue::Integer(1)),
                 LispExpr::Call(vec![
                     LispExpr::Macro(LispMacro::Cond),

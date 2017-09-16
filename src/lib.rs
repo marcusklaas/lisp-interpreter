@@ -1,18 +1,14 @@
 #![cfg_attr(feature = "clippy", feature(plugin))]
 #![cfg_attr(feature = "clippy", plugin(clippy))]
 #![cfg_attr(test, feature(test))]
-#![feature(splice, slice_patterns)]
-
-// extern crate petgraph;
+#![feature(splice, slice_patterns, slice_get_slice, collections_range)]
 
 extern crate string_interner;
 #[cfg(test)]
 extern crate test;
 
 pub mod parse;
-#[macro_use]
 pub mod evaluator;
-// mod specialization;
 
 use std::mem::{replace, transmute_copy};
 use std::convert::From;
@@ -20,27 +16,189 @@ use std::fmt;
 use std::iter::repeat;
 use std::rc::Rc;
 use std::cell::UnsafeCell;
-use std::hash::{Hash, Hasher};
-use evaluator::{compile_finalized_expr, Instr, State};
+use std::collections::hash_map;
+use std::collections::HashMap;
+use string_interner::StringInterner;
+use std::slice::SliceIndex;
+use std::ops::{Add, Index, IndexMut, Sub};
+
+macro_rules! destructure {
+    ( $y:ident, $x:expr ) => {{$x}};
+
+    ( $iter:ident, [ $( $i:ident ),* ], $body:expr ) => {
+        {
+            if let ($( Some( $i), )* None) = {
+                ( $( destructure!($i, $iter.next()), )* $iter.next() )
+            } {
+                Ok($body)
+            } else {
+                Err(EvaluationError::ArgumentCountMismatch)
+            }?
+        }
+    };
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Debug, PartialOrd, Ord)]
+struct StackOffset(u32);
+
+impl StackOffset {
+    fn to_usize(self) -> usize {
+        self.0 as usize
+    }
+}
+
+impl From<StackOffset> for usize {
+    fn from(t: StackOffset) -> Self {
+        t.0 as usize
+    }
+}
+
+impl From<usize> for StackOffset {
+    fn from(t: usize) -> Self {
+        StackOffset(t as u32)
+    }
+}
+
+impl Default for StackOffset {
+    fn default() -> Self {
+        StackOffset(0)
+    }
+}
+
+impl Add for StackOffset {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self::Output {
+        StackOffset(self.0 + other.0)
+    }
+}
+
+impl Sub for StackOffset {
+    type Output = Self;
+
+    fn sub(self, other: Self) -> Self::Output {
+        StackOffset(self.0 - other.0)
+    }
+}
+
+impl SliceIndex<[LispValue]> for StackOffset {
+    type Output = LispValue;
+
+    fn get(self, slice: &[LispValue]) -> Option<&Self::Output> {
+        slice.get(self.to_usize())
+    }
+
+    fn get_mut(self, slice: &mut [LispValue]) -> Option<&mut Self::Output> {
+        slice.get_mut(self.to_usize())
+    }
+
+    unsafe fn get_unchecked(self, _slice: &[LispValue]) -> &Self::Output {
+        unimplemented!()
+    }
+
+    unsafe fn get_unchecked_mut(self, _slice: &mut [LispValue]) -> &mut Self::Output {
+        unimplemented!()
+    }
+
+    fn index(self, slice: &[LispValue]) -> &Self::Output {
+        slice.index(self.to_usize())
+    }
+
+    fn index_mut(self, slice: &mut [LispValue]) -> &mut Self::Output {
+        slice.index_mut(self.to_usize())
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+struct StateIndex(usize);
 
 type EvaluationResult<T> = Result<T, EvaluationError>;
 
 #[derive(Debug)]
-pub struct InnerCustomFunc {
+struct InnerCustomFunc {
     arg_count: usize,
     body: FinalizedExpr,
     byte_code: UnsafeCell<Vec<Instr>>,
 }
 
 #[derive(Debug, Clone)]
-pub struct CustomFunc(Rc<InnerCustomFunc>);
+pub struct State {
+    interns: StringInterner<InternedString>,
+    index_map: HashMap<InternedString, usize>,
+    store: Vec<LispValue>,
+}
 
-impl Hash for CustomFunc {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        let ptr = unsafe { transmute_copy(&self.0) };
-        state.write_usize(ptr);
+impl Index<StateIndex> for State {
+    type Output = LispValue;
+
+    fn index(&self, index: StateIndex) -> &LispValue {
+        self.store.index(index.0)
     }
 }
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            interns: StringInterner::new(),
+            index_map: HashMap::new(),
+            store: Vec::new(),
+        }
+    }
+}
+
+impl State {
+    fn resolve_intern<'s>(&'s self, sym: InternedString) -> &'s str {
+        // We trust that InternedString values have been created by us
+        // and therefore must be valid symbols.
+        unsafe { self.interns.resolve_unchecked(sym) }
+    }
+
+    pub fn intern<S: Into<String>>(&mut self, s: S) -> InternedString {
+        self.interns.get_or_intern(s.into())
+    }
+
+    fn get_index(&self, var: InternedString) -> Option<StateIndex> {
+        self.index_map.get(&var).map(|&i| StateIndex(i))
+    }
+
+    pub fn set_variable(
+        &mut self,
+        var_name: InternedString,
+        val: LispValue,
+        allow_override: bool,
+    ) -> EvaluationResult<()> {
+        let entry = self.index_map.entry(var_name);
+
+        if let hash_map::Entry::Occupied(occ_entry) = entry {
+            if !allow_override {
+                return Err(EvaluationError::BadDefine);
+            } else {
+                let index = *occ_entry.get();
+                self.store[index] = val;
+            }
+        } else {
+            let index = self.store.len();
+            entry.or_insert(index);
+            self.store.push(val);
+        }
+
+        Ok(())
+    }
+}
+
+/// A custom function is the product of a lambda call. It is basically just
+/// another expression that gets evaluated when the function is called.
+/// We keep track of the number of arguments so that we know when enough
+/// of them have been supplied to evaluate.
+/// This function will not be compiled until it is called. This allows us
+/// to refer to definitions that may not have existed at the time of
+/// construction. Otherwise we wouldn't be able to create mutually recursive
+/// functions.
+/// To ensure that every function is only compiled once - an expensive
+/// operation - all details of a function are kept in a reference counted
+/// structure. This makes copying functions cheap.
+#[derive(Debug, Clone)]
+pub struct CustomFunc(Rc<InnerCustomFunc>);
 
 impl PartialEq for CustomFunc {
     fn eq(&self, other: &CustomFunc) -> bool {
@@ -51,23 +209,23 @@ impl PartialEq for CustomFunc {
 impl Eq for CustomFunc {}
 
 impl CustomFunc {
-    pub fn compile<'s>(&'s self, state: &State) -> EvaluationResult<&'s [Instr]> {
+    fn compile<'s>(&'s self, state: &State) -> EvaluationResult<&'s [Instr]> {
         unsafe {
-            let borrowed = self.0.byte_code.get().as_ref().unwrap();
+            let borrowed = &*self.0.byte_code.get();
             if !borrowed.is_empty() {
                 Ok(&borrowed[..])
             } else {
-                let mut_borrowed = self.0.byte_code.get().as_mut().unwrap();
+                let mut_borrowed = &mut *self.0.byte_code.get();
                 *mut_borrowed = compile_finalized_expr(self.0.body.clone(), state)?;
                 Ok(&mut_borrowed[..])
             }
         }
     }
 
-    pub fn from_byte_code(arg_count: usize, bytecode: Vec<Instr>) -> Self {
+    fn from_byte_code(arg_count: usize, bytecode: Vec<Instr>) -> Self {
         CustomFunc(Rc::new(InnerCustomFunc {
             arg_count: arg_count,
-            // dummy
+            // dummy value
             body: FinalizedExpr::Value(LispValue::Boolean(false)),
             byte_code: UnsafeCell::new(bytecode),
         }))
@@ -89,7 +247,7 @@ impl CustomFunc {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Scope(u32);
+struct Scope(u32);
 
 impl fmt::Display for Scope {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -109,7 +267,7 @@ impl Scope {
     }
 }
 
-#[derive(PartialEq, Eq, Debug, Clone, Copy, Hash)]
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
 pub enum BuiltIn {
     AddOne,
     SubOne,
@@ -122,7 +280,7 @@ pub enum BuiltIn {
     CheckType(ArgType),
 }
 
-#[derive(PartialEq, Eq, Debug, Clone, Copy, Hash)]
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
 pub enum ArgType {
     Integer,
     Boolean,
@@ -173,14 +331,14 @@ impl fmt::Display for BuiltIn {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LispFunc {
     BuiltIn(BuiltIn),
     Custom(CustomFunc),
 }
 
 impl LispFunc {
-    pub fn new_custom(arg_count: usize, body: FinalizedExpr) -> LispFunc {
+    fn new_custom(arg_count: usize, body: FinalizedExpr) -> LispFunc {
         LispFunc::Custom(CustomFunc(Rc::new(InnerCustomFunc {
             arg_count: arg_count,
             body: body,
@@ -188,7 +346,7 @@ impl LispFunc {
         })))
     }
 
-    pub fn create_continuation<I: Iterator<Item = LispValue>>(
+    fn curry<I: Iterator<Item = LispValue>>(
         f: CustomFunc,
         total_args: usize,
         supplied_args: usize,
@@ -198,11 +356,10 @@ impl LispFunc {
         let funk = Box::new(FinalizedExpr::Value(
             LispValue::Function(LispFunc::Custom(f)),
         ));
-        let arg_vec = args
-            .map(FinalizedExpr::Value)
-            // TODO: check that we can get away with just taking the default scope
-            // or whether we need to be more clever
-            .chain((0..total_args - supplied_args).map(|o| FinalizedExpr::Argument(o, Scope::default(), MoveStatus::Unmoved)))
+        let arg_vec = args.map(FinalizedExpr::Value)
+            .chain((0..total_args - supplied_args).map(From::from).map(|o| {
+                FinalizedExpr::Argument(o, Scope::default(), MoveStatus::Unmoved)
+            }))
             .collect();
 
         Self::new_custom(
@@ -241,29 +398,33 @@ impl LispMacro {
     }
 }
 
+/// In our implementation, defines can only happen at the top level of
+/// an expression. To enforce in the types, FinalizedExpr does not contain
+/// a Define variant.
 #[derive(Debug, Clone)]
-pub enum TopExpr {
+enum TopExpr {
     Define(InternedString, LispExpr),
     Regular(FinalizedExpr),
 }
 
-// TODO: replace bools by two variant enums
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum FinalizedExpr {
+/// TODO: explain how FinalizedExpression is different from LispExpr
+enum FinalizedExpr {
     // Arg count, scope level, body
     Lambda(usize, Scope, Box<FinalizedExpr>),
     // test expr, true branch, false branch
     Cond(Box<(FinalizedExpr, FinalizedExpr, FinalizedExpr)>),
     Variable(InternedString),
     Value(LispValue),
-    // Offset from stack pointer, scope level, moveable
-    Argument(usize, Scope, MoveStatus),
+    Argument(StackOffset, Scope, MoveStatus),
     // function, arguments, tail-call, self-call
     FunctionCall(Box<FinalizedExpr>, Vec<FinalizedExpr>, bool, bool),
 }
 
 impl FinalizedExpr {
-    pub fn remove_subs_of(self, offset: usize, scope: Scope) -> Self {
+    /// Replaces subexpressions of form sub1(arg) by arg, where arg is the function
+    /// argument with given offset and scope.
+    fn remove_subs_of(self, offset: StackOffset, scope: Scope) -> Self {
         match self {
             FinalizedExpr::FunctionCall(f, args, tail_call, self_call) => {
                 if let FinalizedExpr::Value(
@@ -303,7 +464,9 @@ impl FinalizedExpr {
         }
     }
 
-    pub fn only_use_after_sub(&self, offset: usize, scope: Scope, parent_sub: bool) -> bool {
+    /// Checks whether this expression only uses the variable at the given
+    /// offset as an argument to the sub1 function.
+    fn only_use_after_sub(&self, offset: StackOffset, scope: Scope, parent_sub: bool) -> bool {
         match *self {
             FinalizedExpr::Argument(e_offset, e_scope, _move) => {
                 e_offset != offset || e_scope != scope || parent_sub
@@ -323,14 +486,15 @@ impl FinalizedExpr {
                 ) == &**f;
 
                 f.only_use_after_sub(offset, scope, is_sub) &&
-                    args.iter()
-                        .all(|a| a.only_use_after_sub(offset, scope, is_sub))
+                    args.iter().all(
+                        |a| a.only_use_after_sub(offset, scope, is_sub),
+                    )
             }
         }
     }
 
     // Resolves references to function arguments. Used when creating closures.
-    pub fn replace_args(&self, scope_level: Scope, stack: &mut [LispValue]) -> FinalizedExpr {
+    fn replace_args(&self, scope_level: Scope, stack: &mut [LispValue]) -> FinalizedExpr {
         match *self {
             FinalizedExpr::Argument(index, arg_scope, move_status) if arg_scope < scope_level => {
                 if move_status == MoveStatus::Unmoved {
@@ -360,27 +524,31 @@ impl FinalizedExpr {
                     false_expr.replace_args(scope_level, stack),
                 )))
             }
-            FinalizedExpr::Lambda(arg_c, scope, ref body) => FinalizedExpr::Lambda(
-                arg_c,
-                scope,
-                Box::new(body.replace_args(scope_level, stack)),
-            ),
+            FinalizedExpr::Lambda(arg_c, scope, ref body) => {
+                FinalizedExpr::Lambda(
+                    arg_c,
+                    scope,
+                    Box::new(body.replace_args(scope_level, stack)),
+                )
+            }
             ref x => x.clone(),
         }
     }
 
     pub fn pretty_print(&self, state: &State, indent: usize) -> String {
         match *self {
-            FinalizedExpr::Argument(offset, scope, move_status) => format!(
-                "{}$({}, {})",
-                if move_status == MoveStatus::Unmoved {
-                    "m"
-                } else {
-                    ""
-                },
-                offset,
-                scope
-            ),
+            FinalizedExpr::Argument(offset, scope, move_status) => {
+                format!(
+                    "{}$({:?}, {})",
+                    if move_status == MoveStatus::Unmoved {
+                        "m"
+                    } else {
+                        ""
+                    },
+                    offset,
+                    scope
+                )
+            }
             FinalizedExpr::Value(ref v) => v.pretty_print(state, indent),
             FinalizedExpr::Variable(interned_name) => state.resolve_intern(interned_name).into(),
             FinalizedExpr::Cond(ref triple) => {
@@ -394,12 +562,14 @@ impl FinalizedExpr {
                     expr_iter,
                 )
             }
-            FinalizedExpr::Lambda(arg_c, scope, ref body) => format!(
-                "lambda ({}, {}) -> {}",
-                arg_c,
-                scope,
-                body.pretty_print(state, indent)
-            ),
+            FinalizedExpr::Lambda(arg_c, scope, ref body) => {
+                format!(
+                    "lambda ({}, {}) -> {}",
+                    arg_c,
+                    scope,
+                    body.pretty_print(state, indent)
+                )
+            }
             FinalizedExpr::FunctionCall(ref funk, ref args, is_tail_call, is_self_call) => {
                 let prefix = match (is_self_call, is_tail_call) {
                     (true, true) => "r".to_owned(),
@@ -417,6 +587,64 @@ impl FinalizedExpr {
             }
         }
     }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+enum Instr {
+    /// Calls the function we're currently in with the given number of arguments
+    /// at the top of the stack
+    Recurse(usize),
+    /// Evaluates the function at the top of the stack with given number of arguments.
+    /// The second parameter indicates whether this is a tail call, and if so, whether
+    /// we can skip reuse the arguments
+    EvalFunction(usize, Option<bool>),
+    /// Pops a value from the stack and adds it to the state at the given name
+    PopAndSet(InternedString),
+    /// Creates a custom function with given (scope level, argument count, function body) and pushes
+    /// the result to the stack
+    CreateLambda(Scope, usize, FinalizedExpr),
+
+    /// Skips the given number of instructions
+    Jump(usize),
+    /// Pops boolean value from stack and conditionally jumps a number of instructions
+    CondJump(usize),
+    /// Pushes a value to the stack
+    PushValue(LispValue),
+    /// Clones the n'th argument to the function and pushes it to the stack
+    CloneArgument(StackOffset),
+    /// Moves the n'th argument to the function to the top of the stack and replaces
+    /// it with a dummy value.
+    MoveArgument(StackOffset),
+    /// Clones value from state at given index and pushes it to the stack
+    PushVariable(StateIndex),
+
+    // Built-in instructions
+    AddOne,
+    SubOne,
+    Cons,
+    Cdr,
+    Car,
+    List(usize),
+    CheckZero,
+    CheckNull,
+    CheckType(ArgType),
+
+    /// Pushes the car of the variable with given offset to the stack.
+    /// This is functionally equivalent to [CloneArgument(offset), Car]
+    VarCar(StackOffset),
+    /// Checks whether a variable with given offset is zero and pushes
+    /// the result to the stack
+    VarCheckZero(StackOffset),
+    /// Checks whether a variable with given offset is an empty list and
+    /// pushes the result to the stack
+    VarCheckNull(StackOffset),
+    /// Increments variable at given offset
+    VarAddOne(StackOffset),
+
+    /// The most optimized instruction of all. Checks if the variable with
+    /// given offset is zero. Jumps if it is, decrements it otherwise.
+    /// Params mean (variable_offset, jump_size)
+    CondZeroJumpDecr(StackOffset, usize),
 }
 
 fn format_list<'a, I: Iterator<Item = &'a FinalizedExpr>>(
@@ -441,7 +669,7 @@ fn format_list<'a, I: Iterator<Item = &'a FinalizedExpr>>(
     result
 }
 
-#[derive(Debug, PartialEq, Eq, Hash, Copy, Clone, PartialOrd, Ord)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone, PartialOrd, Ord, Hash)]
 pub struct InternedString(u32);
 
 impl From<InternedString> for usize {
@@ -464,10 +692,9 @@ pub enum LispExpr {
     Call(Vec<LispExpr>),
 }
 
-pub struct FinalizationContext {
+struct FinalizationContext {
     scope_level: Scope,
-    // maps symbols to (scope_level, offset, moveable)
-    arguments: Vec<(InternedString, (Scope, usize, MoveStatus))>,
+    arguments: Vec<(InternedString, (Scope, StackOffset, MoveStatus))>,
     can_tail_call: bool,
     own_name: Option<InternedString>,
 }
@@ -484,7 +711,7 @@ impl FinalizationContext {
 }
 
 impl LispExpr {
-    pub fn into_top_expr(self) -> EvaluationResult<TopExpr> {
+    fn into_top_expr(self) -> EvaluationResult<TopExpr> {
         let is_define = if let &LispExpr::Call(ref expr_list) = &self {
             Some(&LispExpr::Macro(LispMacro::Define)) == expr_list.get(0)
         } else {
@@ -513,7 +740,7 @@ impl LispExpr {
         }
     }
 
-    pub fn finalize(self, ctx: &mut FinalizationContext) -> EvaluationResult<FinalizedExpr> {
+    fn finalize(self, ctx: &mut FinalizationContext) -> EvaluationResult<FinalizedExpr> {
         Ok(match self {
             LispExpr::Value(v) => FinalizedExpr::Value(v),
             LispExpr::OpVar(n) => {
@@ -556,10 +783,13 @@ impl LispExpr {
                             let finalized_false_expr = false_expr.finalize(&mut false_expr_ctx)?;
                             let finalized_true_expr = true_expr.finalize(ctx)?;
 
+                            // Move analysis: a function argument is still moveable
+                            // when it has been moved in neither the true branch or
+                            // the false branch.
                             for (&mut (_, (_, _, ref mut arg_true)), &(_, (_, _, arg_false))) in
-                                ctx.arguments
-                                    .iter_mut()
-                                    .zip(false_expr_ctx.arguments.iter())
+                                ctx.arguments.iter_mut().zip(
+                                    false_expr_ctx.arguments.iter(),
+                                )
                             {
                                 *arg_true = arg_false.combine(*arg_true);
                             }
@@ -576,8 +806,10 @@ impl LispExpr {
                     LispExpr::Macro(LispMacro::Lambda) => {
                         destructure!(expr_iter, [arg_list, body], {
                             if let LispExpr::Call(ref arg_vec) = arg_list {
-                                // Add arguments to the arguments map, overwriting existing
-                                // ones if they have the same symbol.
+                                // Append arguments to the arguments map. Since we're doing
+                                // symbol lookup in reverse orders, this guarantees that
+                                // variables with the same symbol will use the highest
+                                // scope.
                                 let num_args = arg_vec.len();
                                 let arguments_len = ctx.arguments.len();
                                 ctx.arguments.reserve(num_args);
@@ -588,9 +820,11 @@ impl LispExpr {
                                         _ => Err(EvaluationError::MalformedDefinition),
                                     }?;
 
-                                    ctx.arguments.push(
-                                        (symbol, (ctx.scope_level, offset, MoveStatus::Unmoved)),
-                                    );
+                                    ctx.arguments.push((symbol, (
+                                        ctx.scope_level,
+                                        StackOffset::from(offset),
+                                        MoveStatus::Unmoved,
+                                    )));
                                 }
 
                                 // Update context for lambda
@@ -681,7 +915,7 @@ impl LispExpr {
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
-pub enum MoveStatus {
+enum MoveStatus {
     FullyMoved,
     Unmoved,
 }
@@ -690,10 +924,8 @@ impl MoveStatus {
     fn combine(self, other: Self) -> Self {
         if self == other {
             self
-        } else if self == MoveStatus::Unmoved {
-            other
         } else {
-            self
+            MoveStatus::FullyMoved
         }
     }
 }
@@ -721,7 +953,7 @@ pub enum LispValue {
 }
 
 impl LispValue {
-    pub fn get_type(&self) -> ArgType {
+    fn get_type(&self) -> ArgType {
         match *self {
             LispValue::Boolean(..) => ArgType::Boolean,
             LispValue::Integer(..) => ArgType::Integer,
@@ -754,11 +986,228 @@ impl LispValue {
     }
 }
 
+fn builtin_instr(f: BuiltIn, arg_count: usize) -> EvaluationResult<Instr> {
+    Ok(match (f, arg_count) {
+        (BuiltIn::AddOne, 1) => Instr::AddOne,
+        (BuiltIn::SubOne, 1) => Instr::SubOne,
+        (BuiltIn::CheckZero, 1) => Instr::CheckZero,
+        (BuiltIn::CheckNull, 1) => Instr::CheckNull,
+        (BuiltIn::List, _) => Instr::List(arg_count),
+        (BuiltIn::Cons, 2) => Instr::Cons,
+        (BuiltIn::Car, 1) => Instr::Car,
+        (BuiltIn::Cdr, 1) => Instr::Cdr,
+        (BuiltIn::CheckType(t), 1) => Instr::CheckType(t),
+        (_, _) => return Err(EvaluationError::ArgumentCountMismatch),
+    })
+}
+
+// Compiles a finalized expression into instructions and writes them to the
+// given buffer *in reverse order*
+fn inner_compile(
+    expr: FinalizedExpr,
+    state: &State,
+    instructions: &mut Vec<Instr>,
+) -> EvaluationResult<()> {
+    match expr {
+        FinalizedExpr::Argument(offset, _scope, MoveStatus::Unmoved) => {
+            instructions.push(Instr::MoveArgument(offset));
+        }
+        FinalizedExpr::Argument(offset, _scope, _move_status) => {
+            instructions.push(Instr::CloneArgument(offset));
+        }
+        FinalizedExpr::Value(v) => {
+            instructions.push(Instr::PushValue(v));
+        }
+        FinalizedExpr::Variable(n) => {
+            if let Some(i) = state.get_index(n) {
+                instructions.push(Instr::PushVariable(i));
+            } else {
+                return Err(EvaluationError::UnknownVariable(
+                    state.resolve_intern(n).into(),
+                ));
+            }
+        }
+        FinalizedExpr::Cond(triple) => {
+            let unpacked = *triple;
+            let (test, true_expr, false_expr) = unpacked;
+            let before_len = instructions.len();
+            inner_compile(true_expr, state, instructions)?;
+            let jump_size = instructions.len() - before_len;
+            let before_len = instructions.len();
+            instructions.push(Instr::Jump(jump_size));
+
+            fn remove_jump_after_tail_call(instructions: &mut Vec<Instr>, jump_location: usize) {
+                let remove_jump = match instructions[jump_location + 1] {
+                    Instr::EvalFunction(_, Some(_)) |
+                    Instr::Recurse(..) => true,
+                    _ => false,
+                };
+                if remove_jump {
+                    instructions.remove(jump_location);
+                }
+            }
+
+            if let FinalizedExpr::FunctionCall(ref f_box, ref args, ..) = test {
+                if let FinalizedExpr::Value(
+                    LispValue::Function(LispFunc::BuiltIn(BuiltIn::CheckZero)),
+                ) = **f_box
+                {
+                    if let Some(&FinalizedExpr::Argument(offset, scope, _)) = args.get(0) {
+                        // OK, so at this point we know we are jumping conditionally
+                        // on whether a function arg is zero.
+                        // Next: make sure that every use of this argument in the false branch
+                        // is within a sub1 call.
+                        // If this is the case, replace all these sub1 calls by uses
+                        // of the argument itself (maintaining its move status!).
+                        // Then, encode the conditional jump, zero check and decrement using
+                        // a single, superspecialized instruction.
+                        if args.len() == 1 && false_expr.only_use_after_sub(offset, scope, false) {
+                            let new_false_expr = false_expr.remove_subs_of(offset, scope);
+                            inner_compile(new_false_expr, state, instructions)?;
+                            remove_jump_after_tail_call(instructions, before_len);
+                            let jump_size = instructions.len() - before_len;
+                            instructions.push(Instr::CondZeroJumpDecr(offset, jump_size));
+
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+
+            inner_compile(false_expr, state, instructions)?;
+            remove_jump_after_tail_call(instructions, before_len);
+
+            let jump_size = instructions.len() - before_len;
+            instructions.push(Instr::CondJump(jump_size));
+            inner_compile(test, state, instructions)?;
+        }
+        FinalizedExpr::Lambda(arg_count, scope, body) => {
+            instructions.push(Instr::CreateLambda(scope, arg_count, *body));
+        }
+        FinalizedExpr::FunctionCall(funk, args, is_tail_call, is_self_call) => {
+            if let FinalizedExpr::Value(LispValue::Function(LispFunc::BuiltIn(bf))) = *funk {
+                let single_variable =
+                    if let Some(&FinalizedExpr::Argument(offset, _scope, move_status)) =
+                        args.get(0)
+                    {
+                        if args.len() == 1 {
+                            Some((offset, move_status))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
+                match (bf, single_variable) {
+                    (BuiltIn::Car, Some((offset, ..))) |
+                    (BuiltIn::CheckNull, Some((offset, ..))) |
+                    (BuiltIn::CheckZero, Some((offset, ..))) => {
+                        // Inspection mode!
+                        instructions.push(match bf {
+                            BuiltIn::CheckNull => Instr::VarCheckNull(offset),
+                            BuiltIn::CheckZero => Instr::VarCheckZero(offset),
+                            BuiltIn::Car => Instr::VarCar(offset),
+                            _ => unreachable!(),
+                        });
+                        return Ok(());
+                    }
+                    (BuiltIn::AddOne, Some((offset, MoveStatus::Unmoved))) => {
+                        instructions.push(Instr::MoveArgument(offset));
+                        instructions.push(Instr::VarAddOne(offset));
+                        return Ok(());
+                    }
+                    (f, _) => instructions.push(builtin_instr(f, args.len())?),
+                }
+            } else if is_tail_call {
+                // Here, for tail calls, we try to reuse function arguments
+                // and elide copies thereof. For strict recursions, it's
+                // possible to do a (partial) elision when some non-zero suffix
+                // of the called function arguments is an in-order move from the
+                // suffix of the calling function.
+                // For non-recursive tail calls, all arguments have to be
+                // in-order moves in order to elide copies. (Why?)
+                let args_len = args.len();
+                let init_len = instructions.len();
+
+                if is_self_call {
+                    instructions.push(Instr::Recurse(args_len));
+                } else {
+                    instructions.push(Instr::EvalFunction(args_len, Some(false)));
+                    inner_compile(*funk, state, instructions)?;
+                }
+
+                // Compiling all arguments
+                let arg_instr_vecs: Vec<_> = args.into_iter()
+                    .map(|expr| {
+                        let mut sub_buf = Vec::new();
+                        inner_compile(expr, state, &mut sub_buf)?;
+                        Ok(sub_buf)
+                    })
+                    .collect::<Result<_, _>>()?;
+
+                let check_move =
+                    |(idx, buf): (_, &Vec<_>)| if let &Instr::MoveArgument(offset) = buf.index(0) {
+                        idx == offset.to_usize()
+                    } else {
+                        false
+                    };
+
+                let mut num_skip = 0;
+                // When we're doing a tail call that is not a recursion, we will only do
+                // argument copy elision when all its arguments are in-order moves.
+                let mut skippable = is_self_call ||
+                    arg_instr_vecs.iter().enumerate().rev().all(&check_move);
+
+                for (idx, mut buf) in arg_instr_vecs.into_iter().enumerate().rev() {
+                    // If the argument is a move of the calling functions argument and
+                    // the suffix so far are also such moves, elide the move. Because
+                    // instructions are executed in reverse, we skip the first instruction
+                    // of the argument vector.
+                    if skippable && check_move((idx, &buf)) {
+                        num_skip += 1;
+                        instructions.extend(buf.drain(1..));
+                    } else {
+                        instructions.extend(buf.into_iter());
+                        skippable = false;
+                    }
+                }
+
+                if is_self_call {
+                    // Store the number of copies that we have to be for
+                    // execution time.
+                    instructions[init_len] = Instr::Recurse(args_len - num_skip);
+                } else if num_skip == args_len {
+                    instructions[init_len] = Instr::EvalFunction(args_len, Some(true));
+                }
+
+                return Ok(());
+            } else {
+                instructions.push(Instr::EvalFunction(args.len(), None));
+                inner_compile(*funk, state, instructions)?;
+            };
+
+            for expr in args.into_iter().rev() {
+                inner_compile(expr, state, instructions)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn compile_finalized_expr(expr: FinalizedExpr, state: &State) -> EvaluationResult<Vec<Instr>> {
+    let mut instructions = Vec::with_capacity(32);
+
+    inner_compile(expr, state, &mut instructions)?;
+
+    Ok(instructions)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use super::parse::{parse_lisp_string, ParseError};
-    use super::evaluator::State;
     use std::convert::From;
 
     #[derive(Debug, PartialEq, Eq)]
@@ -826,10 +1275,10 @@ mod tests {
             LispValue::Function(LispFunc::Custom(f)) => {
                 assert_eq!(
                     vec![
-                        Instr::MoveArgument(0),
+                        Instr::MoveArgument(From::from(0)),
                         Instr::Recurse(0),
-                        Instr::VarAddOne(0),
-                        Instr::CondZeroJumpDecr(1, 2),
+                        Instr::VarAddOne(From::from(0)),
+                        Instr::CondZeroJumpDecr(From::from(1), 2),
                     ],
                     unsafe { f.0.byte_code.get().as_ref().unwrap().clone() }
                 );
@@ -856,15 +1305,15 @@ mod tests {
             LispValue::Function(LispFunc::Custom(f)) => {
                 assert_eq!(
                     vec![
-                        Instr::MoveArgument(1),
+                        Instr::MoveArgument(From::from(1)),
                         Instr::Jump(1),
                         Instr::Cons,
                         Instr::List(0),
                         Instr::EvalFunction(1, None),
-                        Instr::MoveArgument(0),
-                        Instr::VarCar(1),
+                        Instr::MoveArgument(From::from(0)),
+                        Instr::VarCar(From::from(1)),
                         Instr::CondJump(6),
-                        Instr::VarCheckNull(1),
+                        Instr::VarCheckNull(From::from(1)),
                     ],
                     unsafe { f.0.byte_code.get().as_ref().unwrap().clone() }
                 );
@@ -1168,10 +1617,11 @@ mod tests {
     #[test]
     fn sort() {
         check_lisp_ok(
-            SORT_COMMANDS
-                .into_iter()
-                .cloned()
-                .chain(Some("(sort (list 5 3 2 10 0 7))").into_iter()),
+            SORT_COMMANDS.into_iter().cloned().chain(
+                Some(
+                    "(sort (list 5 3 2 10 0 7))",
+                ).into_iter(),
+            ),
             "(0 2 3 5 7 10)",
         );
     }
@@ -1245,7 +1695,7 @@ mod tests {
     }
 
     #[bench]
-    fn bench_add(b: &mut super::test::Bencher) {
+    fn bench_add_including_compilation(b: &mut super::test::Bencher) {
         b.iter(|| {
             let mut state = State::default();
             check_lisp(
@@ -1290,6 +1740,20 @@ mod tests {
         b.iter(|| check_lisp(&mut state, vec!["(< 10000 10000)"]));
     }
 
+    #[bench]
+    fn bench_big_add(b: &mut super::test::Bencher) {
+        let mut state = State::default();
+        let init_commands = vec![
+            "(define add (lambda (x y) (cond (zero? y) x (add (add1 x) (sub1 y)))))",
+        ];
+
+        for cmd in init_commands {
+            let expr = parse_lisp_string(cmd, &mut state).unwrap();
+            evaluator::eval(expr, &mut state).unwrap();
+        }
+
+        b.iter(|| check_lisp(&mut state, vec!["(add 100000 100000)"]));
+    }
 
     /// Benchmarks list intensive code
     #[bench]
@@ -1346,8 +1810,8 @@ mod tests {
         }
 
         b.iter(|| {
-            let expr =
-                parse_lisp_string("(sort (list 5 1 0 3 2 10 30 0 7 1))", &mut state).unwrap();
+            let expr = parse_lisp_string("(sort (list 5 1 0 3 2 10 30 0 7 1))", &mut state)
+                .unwrap();
             evaluator::eval(expr, &mut state).unwrap();
         });
     }
