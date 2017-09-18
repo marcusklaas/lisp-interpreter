@@ -147,7 +147,7 @@ impl Default for State {
 }
 
 impl State {
-    fn resolve_intern<'s>(&'s self, sym: InternedString) -> &'s str {
+    fn resolve_intern(&self, sym: InternedString) -> &str {
         // We trust that InternedString values have been created by us
         // and therefore must be valid symbols.
         unsafe { self.interns.resolve_unchecked(sym) }
@@ -399,7 +399,7 @@ impl LispMacro {
 }
 
 /// In our implementation, defines can only happen at the top level of
-/// an expression. To enforce in the types, FinalizedExpr does not contain
+/// an expression. To enforce in the types, `FinalizedExpr` does not contain
 /// a Define variant.
 #[derive(Debug, Clone)]
 enum TopExpr {
@@ -408,7 +408,7 @@ enum TopExpr {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-/// TODO: explain how FinalizedExpression is different from LispExpr
+/// TODO: explain how `FinalizedExpression` is different from `LispExpr`
 enum FinalizedExpr {
     // Arg count, scope level, body
     Lambda(usize, Scope, Box<FinalizedExpr>),
@@ -477,13 +477,13 @@ impl FinalizedExpr {
                     true_expr.only_use_after_sub(offset, scope, false) &&
                     false_expr.only_use_after_sub(offset, scope, false)
             }
-            FinalizedExpr::Variable(..) => true,
+            FinalizedExpr::Variable(..) |
             FinalizedExpr::Value(..) => true,
             FinalizedExpr::Lambda(_, _, ref body) => body.only_use_after_sub(offset, scope, false),
             FinalizedExpr::FunctionCall(ref f, ref args, _, _) => {
-                let is_sub = &FinalizedExpr::Value(
+                let is_sub = FinalizedExpr::Value(
                     LispValue::Function(LispFunc::BuiltIn(BuiltIn::SubOne)),
-                ) == &**f;
+                ) == **f;
 
                 f.only_use_after_sub(offset, scope, is_sub) &&
                     args.iter().all(
@@ -498,10 +498,7 @@ impl FinalizedExpr {
         match *self {
             FinalizedExpr::Argument(index, arg_scope, move_status) if arg_scope < scope_level => {
                 if move_status == MoveStatus::Unmoved {
-                    FinalizedExpr::Value(replace(
-                        stack.get_mut(index).unwrap(),
-                        LispValue::Boolean(false),
-                    ))
+                    FinalizedExpr::Value(replace(&mut stack[index], LispValue::Boolean(false)))
                 } else {
                     FinalizedExpr::Value(stack[index].clone())
                 }
@@ -712,7 +709,7 @@ impl FinalizationContext {
 
 impl LispExpr {
     fn into_top_expr(self) -> EvaluationResult<TopExpr> {
-        let is_define = if let &LispExpr::Call(ref expr_list) = &self {
+        let is_define = if let LispExpr::Call(ref expr_list) = self {
             Some(&LispExpr::Macro(LispMacro::Define)) == expr_list.get(0)
         } else {
             false
@@ -751,8 +748,7 @@ impl LispExpr {
                 ctx.arguments
                     .iter_mut()
                     .rev()
-                    .filter(|&&mut (o, _)| o == n)
-                    .next()
+                    .find(|&&mut (o, _)| o == n)
                     .map(|&mut (_, (arg_scope, arg_offset, ref mut move_status))| {
                         FinalizedExpr::Argument(
                             arg_offset,
@@ -760,7 +756,7 @@ impl LispExpr {
                             replace(move_status, MoveStatus::FullyMoved),
                         )
                     })
-                    .unwrap_or(FinalizedExpr::Variable(n))
+                    .unwrap_or_else(|| FinalizedExpr::Variable(n))
             }
             LispExpr::Macro(..) => {
                 return Err(EvaluationError::UnexpectedOperator);
@@ -1147,7 +1143,7 @@ fn inner_compile(
                     .collect::<Result<_, _>>()?;
 
                 let check_move =
-                    |(idx, buf): (_, &Vec<_>)| if let &Instr::MoveArgument(offset) = buf.index(0) {
+                    |(idx, buf): (_, &Vec<_>)| if let Instr::MoveArgument(offset) = *buf.index(0) {
                         idx == offset.to_usize()
                     } else {
                         false
