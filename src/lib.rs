@@ -109,9 +109,6 @@ impl SliceIndex<[LispValue]> for StackOffset {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-struct StateIndex(usize);
-
 type EvaluationResult<T> = Result<T, EvaluationError>;
 
 #[derive(Debug)]
@@ -124,24 +121,14 @@ struct InnerCustomFunc {
 #[derive(Debug, Clone)]
 pub struct State {
     interns: StringInterner<InternedString>,
-    index_map: HashMap<InternedString, usize>,
-    store: Vec<LispValue>,
-}
-
-impl Index<StateIndex> for State {
-    type Output = LispValue;
-
-    fn index(&self, index: StateIndex) -> &LispValue {
-        self.store.index(index.0)
-    }
+    store: HashMap<InternedString, LispValue>,
 }
 
 impl Default for State {
     fn default() -> Self {
         Self {
             interns: StringInterner::new(),
-            index_map: HashMap::new(),
-            store: Vec::new(),
+            store: HashMap::new(),
         }
     }
 }
@@ -157,8 +144,8 @@ impl State {
         self.interns.get_or_intern(s.into())
     }
 
-    fn get_index(&self, var: InternedString) -> Option<StateIndex> {
-        self.index_map.get(&var).map(|&i| StateIndex(i))
+    fn get(&self, var: InternedString) -> Option<&LispValue> {
+        self.store.get(&var)
     }
 
     pub fn set_variable(
@@ -167,22 +154,17 @@ impl State {
         val: LispValue,
         allow_override: bool,
     ) -> EvaluationResult<()> {
-        let entry = self.index_map.entry(var_name);
-
-        if let hash_map::Entry::Occupied(occ_entry) = entry {
-            if !allow_override {
-                return Err(EvaluationError::BadDefine);
-            } else {
-                let index = *occ_entry.get();
-                self.store[index] = val;
+        match self.store.entry(var_name) {
+            hash_map::Entry::Occupied(..) if !allow_override => Err(EvaluationError::BadDefine),
+            hash_map::Entry::Occupied(mut occ_entry) => {
+                *occ_entry.get_mut() = val;
+                Ok(())
             }
-        } else {
-            let index = self.store.len();
-            entry.or_insert(index);
-            self.store.push(val);
+            hash_map::Entry::Vacant(vac_entry) => {
+                vac_entry.insert(val);
+                Ok(())
+            }
         }
-
-        Ok(())
     }
 }
 
@@ -477,8 +459,7 @@ impl FinalizedExpr {
                     true_expr.only_use_after_sub(offset, scope, false) &&
                     false_expr.only_use_after_sub(offset, scope, false)
             }
-            FinalizedExpr::Variable(..) |
-            FinalizedExpr::Value(..) => true,
+            FinalizedExpr::Variable(..) | FinalizedExpr::Value(..) => true,
             FinalizedExpr::Lambda(_, _, ref body) => body.only_use_after_sub(offset, scope, false),
             FinalizedExpr::FunctionCall(ref f, ref args, _, _) => {
                 let is_sub = FinalizedExpr::Value(
@@ -486,9 +467,8 @@ impl FinalizedExpr {
                 ) == **f;
 
                 f.only_use_after_sub(offset, scope, is_sub) &&
-                    args.iter().all(
-                        |a| a.only_use_after_sub(offset, scope, is_sub),
-                    )
+                    args.iter()
+                        .all(|a| a.only_use_after_sub(offset, scope, is_sub))
             }
         }
     }
@@ -521,31 +501,27 @@ impl FinalizedExpr {
                     false_expr.replace_args(scope_level, stack),
                 )))
             }
-            FinalizedExpr::Lambda(arg_c, scope, ref body) => {
-                FinalizedExpr::Lambda(
-                    arg_c,
-                    scope,
-                    Box::new(body.replace_args(scope_level, stack)),
-                )
-            }
+            FinalizedExpr::Lambda(arg_c, scope, ref body) => FinalizedExpr::Lambda(
+                arg_c,
+                scope,
+                Box::new(body.replace_args(scope_level, stack)),
+            ),
             ref x => x.clone(),
         }
     }
 
     pub fn pretty_print(&self, state: &State, indent: usize) -> String {
         match *self {
-            FinalizedExpr::Argument(offset, scope, move_status) => {
-                format!(
-                    "{}$({:?}, {})",
-                    if move_status == MoveStatus::Unmoved {
-                        "m"
-                    } else {
-                        ""
-                    },
-                    offset,
-                    scope
-                )
-            }
+            FinalizedExpr::Argument(offset, scope, move_status) => format!(
+                "{}$({:?}, {})",
+                if move_status == MoveStatus::Unmoved {
+                    "m"
+                } else {
+                    ""
+                },
+                offset,
+                scope
+            ),
             FinalizedExpr::Value(ref v) => v.pretty_print(state, indent),
             FinalizedExpr::Variable(interned_name) => state.resolve_intern(interned_name).into(),
             FinalizedExpr::Cond(ref triple) => {
@@ -559,14 +535,12 @@ impl FinalizedExpr {
                     expr_iter,
                 )
             }
-            FinalizedExpr::Lambda(arg_c, scope, ref body) => {
-                format!(
-                    "lambda ({}, {}) -> {}",
-                    arg_c,
-                    scope,
-                    body.pretty_print(state, indent)
-                )
-            }
+            FinalizedExpr::Lambda(arg_c, scope, ref body) => format!(
+                "lambda ({}, {}) -> {}",
+                arg_c,
+                scope,
+                body.pretty_print(state, indent)
+            ),
             FinalizedExpr::FunctionCall(ref funk, ref args, is_tail_call, is_self_call) => {
                 let prefix = match (is_self_call, is_tail_call) {
                     (true, true) => "r".to_owned(),
@@ -612,8 +586,6 @@ enum Instr {
     /// Moves the n'th argument to the function to the top of the stack and replaces
     /// it with a dummy value.
     MoveArgument(StackOffset),
-    /// Clones value from state at given index and pushes it to the stack
-    PushVariable(StateIndex),
 
     // Built-in instructions
     AddOne,
@@ -783,9 +755,9 @@ impl LispExpr {
                             // when it has been moved in neither the true branch or
                             // the false branch.
                             for (&mut (_, (_, _, ref mut arg_true)), &(_, (_, _, arg_false))) in
-                                ctx.arguments.iter_mut().zip(
-                                    false_expr_ctx.arguments.iter(),
-                                )
+                                ctx.arguments
+                                    .iter_mut()
+                                    .zip(false_expr_ctx.arguments.iter())
                             {
                                 *arg_true = arg_false.combine(*arg_true);
                             }
@@ -816,11 +788,14 @@ impl LispExpr {
                                         _ => Err(EvaluationError::MalformedDefinition),
                                     }?;
 
-                                    ctx.arguments.push((symbol, (
-                                        ctx.scope_level,
-                                        StackOffset::from(offset),
-                                        MoveStatus::Unmoved,
-                                    )));
+                                    ctx.arguments.push((
+                                        symbol,
+                                        (
+                                            ctx.scope_level,
+                                            StackOffset::from(offset),
+                                            MoveStatus::Unmoved,
+                                        ),
+                                    ));
                                 }
 
                                 // Update context for lambda
@@ -1014,15 +989,13 @@ fn inner_compile(
         FinalizedExpr::Value(v) => {
             instructions.push(Instr::PushValue(v));
         }
-        FinalizedExpr::Variable(n) => {
-            if let Some(i) = state.get_index(n) {
-                instructions.push(Instr::PushVariable(i));
-            } else {
-                return Err(EvaluationError::UnknownVariable(
-                    state.resolve_intern(n).into(),
-                ));
-            }
-        }
+        FinalizedExpr::Variable(n) => if let Some(v) = state.get(n) {
+            instructions.push(Instr::PushValue(v.clone()));
+        } else {
+            return Err(EvaluationError::UnknownVariable(
+                state.resolve_intern(n).into(),
+            ));
+        },
         FinalizedExpr::Cond(triple) => {
             let unpacked = *triple;
             let (test, true_expr, false_expr) = unpacked;
@@ -1034,8 +1007,7 @@ fn inner_compile(
 
             fn remove_jump_after_tail_call(instructions: &mut Vec<Instr>, jump_location: usize) {
                 let remove_jump = match instructions[jump_location + 1] {
-                    Instr::EvalFunction(_, Some(_)) |
-                    Instr::Recurse(..) => true,
+                    Instr::EvalFunction(_, Some(_)) | Instr::Recurse(..) => true,
                     _ => false,
                 };
                 if remove_jump {
@@ -1083,8 +1055,7 @@ fn inner_compile(
         FinalizedExpr::FunctionCall(funk, args, is_tail_call, is_self_call) => {
             if let FinalizedExpr::Value(LispValue::Function(LispFunc::BuiltIn(bf))) = *funk {
                 let single_variable =
-                    if let Some(&FinalizedExpr::Argument(offset, _scope, move_status)) =
-                        args.get(0)
+                    if let Some(&FinalizedExpr::Argument(offset, _scope, move_status)) = args.get(0)
                     {
                         if args.len() == 1 {
                             Some((offset, move_status))
@@ -1152,8 +1123,8 @@ fn inner_compile(
                 let mut num_skip = 0;
                 // When we're doing a tail call that is not a recursion, we will only do
                 // argument copy elision when all its arguments are in-order moves.
-                let mut skippable = is_self_call ||
-                    arg_instr_vecs.iter().enumerate().rev().all(&check_move);
+                let mut skippable =
+                    is_self_call || arg_instr_vecs.iter().enumerate().rev().all(&check_move);
 
                 for (idx, mut buf) in arg_instr_vecs.into_iter().enumerate().rev() {
                     // If the argument is a move of the calling functions argument and
@@ -1286,8 +1257,7 @@ mod tests {
     #[test]
     fn map_bytecode() {
         let mut state = State::default();
-        // Note, this is a gimped add that doesn't recurse so that we need not
-        // import StateIndex
+        // FIXME: this is a gimped map that doesn't recurse
         let map = check_lisp(
             &mut state,
             vec![
@@ -1613,11 +1583,10 @@ mod tests {
     #[test]
     fn sort() {
         check_lisp_ok(
-            SORT_COMMANDS.into_iter().cloned().chain(
-                Some(
-                    "(sort (list 5 3 2 10 0 7))",
-                ).into_iter(),
-            ),
+            SORT_COMMANDS
+                .into_iter()
+                .cloned()
+                .chain(Some("(sort (list 5 3 2 10 0 7))").into_iter()),
             "(0 2 3 5 7 10)",
         );
     }
@@ -1806,8 +1775,8 @@ mod tests {
         }
 
         b.iter(|| {
-            let expr = parse_lisp_string("(sort (list 5 1 0 3 2 10 30 0 7 1))", &mut state)
-                .unwrap();
+            let expr =
+                parse_lisp_string("(sort (list 5 1 0 3 2 10 30 0 7 1))", &mut state).unwrap();
             evaluator::eval(expr, &mut state).unwrap();
         });
     }

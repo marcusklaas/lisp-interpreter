@@ -40,8 +40,7 @@ fn remove_old_arguments(stack: &mut Vec<LispValue>, start: StackOffset, end: Sta
 
 struct StackRef {
     instr_pointer: usize,
-    #[allow(dead_code)]
-    func: CustomFunc,
+    #[allow(dead_code)] func: CustomFunc,
     stack_pointer: StackOffset,
     // This reference isn't really static - it refers to vector inside of
     // instr_vec. There's just no way to express this in Rust (I think!)
@@ -93,28 +92,24 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
         frame.instr_pointer -= 1;
 
         match frame.instr_slice[frame.instr_pointer] {
-            Instr::VarAddOne(offset) => {
-                if let LispValue::Integer(ref mut i) =
-                    *value_stack.get_mut(frame.stack_pointer + offset).unwrap()
-                {
-                    *i += 1;
+            Instr::VarAddOne(offset) => if let LispValue::Integer(ref mut i) =
+                *value_stack.get_mut(frame.stack_pointer + offset).unwrap()
+            {
+                *i += 1;
+            } else {
+                return Err(EvaluationError::ArgumentTypeMismatch);
+            },
+            Instr::CondZeroJumpDecr(offset, jump_size) => if let LispValue::Integer(ref mut i) =
+                *value_stack.get_mut(frame.stack_pointer + offset).unwrap()
+            {
+                if *i == 0 {
+                    frame.instr_pointer -= jump_size;
                 } else {
-                    return Err(EvaluationError::ArgumentTypeMismatch);
+                    *i -= 1;
                 }
-            }
-            Instr::CondZeroJumpDecr(offset, jump_size) => {
-                if let LispValue::Integer(ref mut i) =
-                    *value_stack.get_mut(frame.stack_pointer + offset).unwrap()
-                {
-                    if *i == 0 {
-                        frame.instr_pointer -= jump_size;
-                    } else {
-                        *i -= 1;
-                    }
-                } else {
-                    return Err(EvaluationError::ArgumentTypeMismatch);
-                }
-            }
+            } else {
+                return Err(EvaluationError::ArgumentTypeMismatch);
+            },
             Instr::VarCheckNull(offset) => {
                 let head = if let LispValue::List(ref l) =
                     *value_stack.get(frame.stack_pointer + offset).unwrap()
@@ -174,15 +169,13 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
             Instr::Jump(n) => {
                 frame.instr_pointer -= n;
             }
-            Instr::CondJump(n) => {
-                if let LispValue::Boolean(b) = value_stack.pop().unwrap() {
-                    if b {
-                        frame.instr_pointer -= n;
-                    }
-                } else {
-                    return Err(EvaluationError::ArgumentTypeMismatch);
+            Instr::CondJump(n) => if let LispValue::Boolean(b) = value_stack.pop().unwrap() {
+                if b {
+                    frame.instr_pointer -= n;
                 }
-            }
+            } else {
+                return Err(EvaluationError::ArgumentTypeMismatch);
+            },
             Instr::PushValue(ref v) => {
                 value_stack.push(v.clone());
             }
@@ -198,15 +191,8 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                 );
                 value_stack.push(val);
             }
-            Instr::PushVariable(i) => {
-                value_stack.push(state[i].clone());
-            }
             Instr::PopAndSet(var_name) => {
-                state.set_variable(
-                    var_name,
-                    value_stack.pop().unwrap(),
-                    false,
-                )?;
+                state.set_variable(var_name, value_stack.pop().unwrap(), false)?;
                 value_stack.push(LispValue::List(Vec::new()));
             }
             // Pops a function off the value stack and applies it to the values
@@ -284,12 +270,10 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                 let new_vec = value_stack.split_off(len - arg_count);
                 value_stack.push(LispValue::List(new_vec));
             }
-            Instr::Car => {
-                unitary_list(&mut value_stack, |vec| match vec.pop() {
-                    Some(car) => Ok(car),
-                    None => Err(EvaluationError::EmptyList),
-                })?
-            }
+            Instr::Car => unitary_list(&mut value_stack, |vec| match vec.pop() {
+                Some(car) => Ok(car),
+                None => Err(EvaluationError::EmptyList),
+            })?,
             Instr::Cdr => {
                 if let LispValue::List(ref mut v) = *value_stack.last_mut().unwrap() {
                     if v.pop().is_none() {
@@ -299,12 +283,10 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                     return Err(EvaluationError::ArgumentTypeMismatch);
                 };
             }
-            Instr::CheckNull => {
-                unitary_list(
-                    &mut value_stack,
-                    |vec| Ok(LispValue::Boolean(vec.is_empty())),
-                )?
-            }
+            Instr::CheckNull => unitary_list(
+                &mut value_stack,
+                |vec| Ok(LispValue::Boolean(vec.is_empty())),
+            )?,
             Instr::AddOne => {
                 if let LispValue::Integer(ref mut i) = *value_stack.last_mut().unwrap() {
                     *i += 1;
