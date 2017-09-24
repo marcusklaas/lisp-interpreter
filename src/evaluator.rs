@@ -233,14 +233,17 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                                 continue;
                             }
                             // Exactly right number of arguments. Let's evaluate.
-                            else if let Some(reuse_args) = tail_call_args {
-                                if !reuse_args {
-                                    // Remove old arguments of the stack.
-                                    let top_index =
-                                        StackOffset::from(value_stack.len() - arg_count);
-                                    let bottom_index = frame.stack_pointer;
-                                    remove_old_arguments(&mut value_stack, bottom_index, top_index);
-                                }
+                            else if let Some(arg_reuse_count) = tail_call_args {
+                                // TODO: re-enable this optimization when everything works again
+                                //if arg_reuse_count != func_arg_count {
+                                // Remove old arguments of the stack.
+                                let top_index = StackOffset::from(
+                                    value_stack.len() - func_arg_count + arg_reuse_count,
+                                );
+                                let bottom_index =
+                                    frame.stack_pointer + StackOffset::from(arg_reuse_count);
+                                remove_old_arguments(&mut value_stack, bottom_index, top_index);
+                                // }
 
                                 (f, false)
                             } else {
