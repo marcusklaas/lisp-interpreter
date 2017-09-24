@@ -568,7 +568,7 @@ enum Instr {
     /// Evaluates the function at the top of the stack with given number of arguments.
     /// The second parameter indicates whether this is a tail call, and if so, whether
     /// we can skip reuse the arguments
-    EvalFunction(usize, Option<bool>),
+    EvalFunction(usize, Option<usize>),
     /// Pops a value from the stack and adds it to the state at the given name
     PopAndSet(InternedString),
     /// Creates a custom function with given (scope level, argument count, function body) and pushes
@@ -1100,7 +1100,7 @@ fn inner_compile(
                 if is_self_call {
                     instructions.push(Instr::Recurse(args_len));
                 } else {
-                    instructions.push(Instr::EvalFunction(args_len, Some(false)));
+                    instructions.push(Instr::EvalFunction(args_len, Some(0)));
                     inner_compile(*funk, state, instructions)?;
                 }
 
@@ -1120,32 +1120,39 @@ fn inner_compile(
                         false
                     };
 
-                let mut num_skip = 0;
+                let real_num_skip = arg_instr_vecs
+                    .iter()
+                    .enumerate()
+                    .take_while(|&x| check_move(x))
+                    .count();
+
+                println!("real num skip: {}", real_num_skip);
+
+                // let mut num_skip = 0;
                 // When we're doing a tail call that is not a recursion, we will only do
                 // argument copy elision when all its arguments are in-order moves.
-                let mut skippable =
-                    is_self_call || arg_instr_vecs.iter().enumerate().rev().all(&check_move);
+                // let mut skippable =
+                //     is_self_call || arg_instr_vecs.iter().enumerate().all(&check_move);
 
                 for (idx, mut buf) in arg_instr_vecs.into_iter().enumerate().rev() {
                     // If the argument is a move of the calling functions argument and
                     // the suffix so far are also such moves, elide the move. Because
                     // instructions are executed in reverse, we skip the first instruction
                     // of the argument vector.
-                    if skippable && check_move((idx, &buf)) {
-                        num_skip += 1;
+                    if idx < real_num_skip {
+                        // num_skip += 1;
                         instructions.extend(buf.drain(1..));
                     } else {
                         instructions.extend(buf.into_iter());
-                        skippable = false;
                     }
                 }
 
                 if is_self_call {
                     // Store the number of copies that we have to be for
                     // execution time.
-                    instructions[init_len] = Instr::Recurse(args_len - num_skip);
-                } else if num_skip == args_len {
-                    instructions[init_len] = Instr::EvalFunction(args_len, Some(true));
+                    instructions[init_len] = Instr::Recurse(args_len - real_num_skip);
+                } else if real_num_skip == args_len {
+                    instructions[init_len] = Instr::EvalFunction(args_len, Some(real_num_skip));
                 }
 
                 return Ok(());
@@ -1559,6 +1566,17 @@ mod tests {
     }
 
     #[test]
+    fn popn() {
+        check_lisp_ok(
+            vec![
+                "(define popn (lambda (l n) (cond (zero? n) l (popn (cdr l) (sub1 n)))))",
+                "(popn (list 1 2 3 4 5) 2)",
+            ],
+            "(1 2 3)",
+        );
+    }
+
+    #[test]
     fn lambda() {
         check_lisp_ok(
             vec![
@@ -1578,6 +1596,10 @@ mod tests {
         "(define and (lambda (t1 t2) (cond t1 t2 #f)))",
         "(define append (lambda (l1 l2) (cond (null? l2) l1 (cons (car l2) (append l1 (cdr l2))))))",
         "(define sort (lambda (l) (cond (null? l) l (append (cons (car l) (sort (filter (lambda (x) (not (> x (car l)))) (cdr l)))) (sort (filter (lambda (x) (> x (car l))) l))))))",
+        "(define sort_rev (lambda (l) (cond (null? l) l (app_rev (cons (car l) (sort_rev (filter (lambda (x) (not (< x (car l)))) (cdr l)))) (sort' (filter (lambda (x) (< x (car l))) l))))))",
+        "(define sort' (lambda (l) (cond (null? l) l (app_rev (cons (car l) (sort' (filter (lambda (x) (not (> x (car l)))) (cdr l)))) (sort_rev (filter (lambda (x) (> x (car l))) l))))))",
+        "(define app_rev (lambda (l r) (cond (null? r) l (app_rev (cons (car r) l) (cdr r)))))",
+        "(define < (lambda (x y) (> y x)))",
     ];
 
     #[test]
@@ -1775,8 +1797,28 @@ mod tests {
         }
 
         b.iter(|| {
-            let expr =
-                parse_lisp_string("(sort (list 5 1 0 3 2 10 30 0 7 1))", &mut state).unwrap();
+            let expr = parse_lisp_string(
+                "(sort (list 25 3 40 5 1 0 3 2 10 30 0 7 1 2 300 5 3 13 3 0 1 2 2 3 1))",
+                &mut state,
+            ).unwrap();
+            evaluator::eval(expr, &mut state).unwrap();
+        });
+    }
+
+    #[bench]
+    fn bench_sort_alt(b: &mut super::test::Bencher) {
+        let mut state = State::default();
+
+        for cmd in SORT_COMMANDS {
+            let expr = parse_lisp_string(cmd, &mut state).unwrap();
+            evaluator::eval(expr, &mut state).unwrap();
+        }
+
+        b.iter(|| {
+            let expr = parse_lisp_string(
+                "(sort' (list 25 3 40 5 1 0 3 2 10 30 0 7 1 2 300 5 3 13 3 0 1 2 2 3 1))",
+                &mut state,
+            ).unwrap();
             evaluator::eval(expr, &mut state).unwrap();
         });
     }
