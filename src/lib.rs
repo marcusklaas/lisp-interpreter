@@ -1089,11 +1089,9 @@ fn inner_compile(
             } else if is_tail_call {
                 // Here, for tail calls, we try to reuse function arguments
                 // and elide copies thereof. For strict recursions, it's
-                // possible to do a (partial) elision when some non-zero suffix
+                // possible to do a (partial) elision when some non-zero prefix
                 // of the called function arguments is an in-order move from the
-                // suffix of the calling function.
-                // For non-recursive tail calls, all arguments have to be
-                // in-order moves in order to elide copies. (Why?)
+                // prefix of the calling function.
                 let args_len = args.len();
                 let init_len = instructions.len();
 
@@ -1113,34 +1111,20 @@ fn inner_compile(
                     })
                     .collect::<Result<_, _>>()?;
 
-                let check_move =
-                    |(idx, buf): (_, &Vec<_>)| if let Instr::MoveArgument(offset) = *buf.index(0) {
-                        idx == offset.to_usize()
-                    } else {
-                        false
-                    };
-
                 let real_num_skip = arg_instr_vecs
                     .iter()
                     .enumerate()
-                    .take_while(|&x| check_move(x))
+                    .take_while(|&(idx, buf): &(_, &Vec<_>)| {
+                        if let Instr::MoveArgument(offset) = *buf.index(0) {
+                            idx == offset.to_usize()
+                        } else {
+                            false
+                        }
+                    })
                     .count();
 
-                println!("real num skip: {}", real_num_skip);
-
-                // let mut num_skip = 0;
-                // When we're doing a tail call that is not a recursion, we will only do
-                // argument copy elision when all its arguments are in-order moves.
-                // let mut skippable =
-                //     is_self_call || arg_instr_vecs.iter().enumerate().all(&check_move);
-
                 for (idx, mut buf) in arg_instr_vecs.into_iter().enumerate().rev() {
-                    // If the argument is a move of the calling functions argument and
-                    // the suffix so far are also such moves, elide the move. Because
-                    // instructions are executed in reverse, we skip the first instruction
-                    // of the argument vector.
                     if idx < real_num_skip {
-                        // num_skip += 1;
                         instructions.extend(buf.drain(1..));
                     } else {
                         instructions.extend(buf.into_iter());
@@ -1151,7 +1135,7 @@ fn inner_compile(
                     // Store the number of copies that we have to be for
                     // execution time.
                     instructions[init_len] = Instr::Recurse(args_len - real_num_skip);
-                } else if real_num_skip == args_len {
+                } else {
                     instructions[init_len] = Instr::EvalFunction(args_len, Some(real_num_skip));
                 }
 
@@ -1261,6 +1245,7 @@ mod tests {
         }
     }
 
+    // TODO: add helper function for bytecode testing
     #[test]
     fn map_bytecode() {
         let mut state = State::default();
