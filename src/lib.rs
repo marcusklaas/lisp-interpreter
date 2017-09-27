@@ -601,6 +601,9 @@ enum Instr {
     /// Pushes the car of the variable with given offset to the stack.
     /// This is functionally equivalent to [CloneArgument(offset), Car]
     VarCar(StackOffset),
+    /// Identical to VarCar, except that it replaces the variable at the
+    /// given offset by its Cdr.
+    VarSplit(StackOffset),
     /// Checks whether a variable with given offset is zero and pushes
     /// the result to the stack
     VarCheckZero(StackOffset),

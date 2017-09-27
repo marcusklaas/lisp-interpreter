@@ -132,6 +132,21 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
 
                 value_stack.push(head);
             }
+            Instr::VarSplit(offset) => {
+                let head = if let LispValue::List(ref mut list) =
+                    *value_stack.get_mut(frame.stack_pointer + offset).unwrap()
+                {
+                    if let Some(elem) = list.pop() {
+                        elem
+                    } else {
+                        return Err(EvaluationError::EmptyList);
+                    }
+                } else {
+                    return Err(EvaluationError::ArgumentTypeMismatch);
+                };
+
+                value_stack.push(head);
+            }
             Instr::VarCar(offset) => {
                 let head = if let LispValue::List(ref list) =
                     *value_stack.get(frame.stack_pointer + offset).unwrap()
