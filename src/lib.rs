@@ -573,7 +573,7 @@ enum Instr {
     PopAndSet(InternedString),
     /// Creates a custom function with given (scope level, argument count, function body) and pushes
     /// the result to the stack
-    CreateLambda(Scope, usize, FinalizedExpr),
+    CreateLambda(Scope, usize, Box<FinalizedExpr>),
 
     /// Skips the given number of instructions
     Jump(usize),
@@ -1050,7 +1050,7 @@ fn inner_compile(
             inner_compile(test, state, instructions)?;
         }
         FinalizedExpr::Lambda(arg_count, scope, body) => {
-            instructions.push(Instr::CreateLambda(scope, arg_count, *body));
+            instructions.push(Instr::CreateLambda(scope, arg_count, body));
         }
         FinalizedExpr::FunctionCall(funk, args, is_tail_call, is_self_call) => {
             if let FinalizedExpr::Value(LispValue::Function(LispFunc::BuiltIn(bf))) = *funk {
@@ -1111,7 +1111,7 @@ fn inner_compile(
                     })
                     .collect::<Result<_, _>>()?;
 
-                let real_num_skip = arg_instr_vecs
+                let arg_skip_count = arg_instr_vecs
                     .iter()
                     .enumerate()
                     .take_while(|&(idx, buf): &(_, &Vec<_>)| {
@@ -1124,7 +1124,7 @@ fn inner_compile(
                     .count();
 
                 for (idx, mut buf) in arg_instr_vecs.into_iter().enumerate().rev() {
-                    if idx < real_num_skip {
+                    if idx < arg_skip_count {
                         instructions.extend(buf.drain(1..));
                     } else {
                         instructions.extend(buf.into_iter());
@@ -1134,9 +1134,9 @@ fn inner_compile(
                 if is_self_call {
                     // Store the number of copies that we have to be for
                     // execution time.
-                    instructions[init_len] = Instr::Recurse(args_len - real_num_skip);
+                    instructions[init_len] = Instr::Recurse(args_len - arg_skip_count);
                 } else {
-                    instructions[init_len] = Instr::EvalFunction(args_len, Some(real_num_skip));
+                    instructions[init_len] = Instr::EvalFunction(args_len, Some(arg_skip_count));
                 }
 
                 return Ok(());
