@@ -1045,72 +1045,78 @@ fn inner_compile(
             ));
         },
         FinalizedExpr::Cond(triple) => {
-            let unpacked = *triple;
-            let (test, true_expr, false_expr) = unpacked;
-
-            // FIXME: this is all a horrible mess. FIX ASAP
-            // Probably the only reasonable way to do this is by unreversing.
-            // Doing that at this point will be a pain in the neck, though.
-            let test_clone = test.clone();
-
-            let mut test_expr_buf = Vec::new();
-            inner_compile(test, state, &mut test_expr_buf, var_stats)?;
-            let mut false_expr_var_stats = var_stats.clone();
-
-            let before_len = instructions.len();
-            inner_compile(true_expr, state, instructions, var_stats)?;
-            let jump_size = instructions.len() - before_len;
-            let before_len = instructions.len();
-            instructions.push(Instr::Jump(jump_size));
-
-            fn remove_jump_after_tail_call(instructions: &mut Vec<Instr>, jump_location: usize) {
-                let remove_jump = match instructions[jump_location + 1] {
+            fn remove_jump_after_tail_call(instructions: &mut Vec<Instr>) {
+                let remove_jump = match *instructions.last().unwrap() {
                     Instr::EvalFunction(_, Some(_)) | Instr::Recurse(..) => true,
                     _ => false,
                 };
                 if remove_jump {
-                    instructions.remove(jump_location);
+                    instructions.pop();
                 }
             }
 
-            if let FinalizedExpr::FunctionCall(ref f_box, ref args, ..) = test_clone {
-                if let FinalizedExpr::Value(
-                    LispValue::Function(LispFunc::BuiltIn(BuiltIn::CheckZero)),
-                ) = **f_box
-                {
-                    if let Some(&FinalizedExpr::Argument(offset, scope, _)) = args.get(0) {
-                        // OK, so at this point we know we are jumping conditionally
-                        // on whether a function arg is zero.
-                        // Next: make sure that every use of this argument in the false branch
-                        // is within a sub1 call.
-                        // If this is the case, replace all these sub1 calls by uses
-                        // of the argument itself (maintaining its move status!).
-                        // Then, encode the conditional jump, zero check and decrement using
-                        // a single, superspecialized instruction.
-                        if args.len() == 1 && false_expr.only_use_after_sub(offset, scope, false) {
-                            let new_false_expr = false_expr.remove_subs_of(offset, scope);
-                            inner_compile(
-                                new_false_expr,
-                                state,
-                                instructions,
-                                &mut false_expr_var_stats,
-                            )?;
-                            remove_jump_after_tail_call(instructions, before_len);
-                            let jump_size = instructions.len() - before_len;
-                            instructions.push(Instr::CondZeroJumpDecr(offset, jump_size));
+            let unpacked = *triple;
+            let (test, true_expr, false_expr) = unpacked;
+            let mut cond_zero_jump = false;
 
-                            return Ok(());
+
+            let mut false_expr_var_stats = var_stats.clone();
+            let first_jump_location;
+
+            {
+                let ref_test = &test;
+
+                if let &FinalizedExpr::FunctionCall(ref f_box, ref args, ..) = ref_test {
+                    if let FinalizedExpr::Value(
+                        LispValue::Function(LispFunc::BuiltIn(BuiltIn::CheckZero)),
+                    ) = **f_box
+                    {
+                        if let Some(&FinalizedExpr::Argument(offset, scope, _)) = args.get(0) {
+                            // OK, so at this point we know we are jumping conditionally
+                            // on whether a function arg is zero.
+                            // Next: make sure that every use of this argument in the false branch
+                            // is within a sub1 call.
+                            // If this is the case, replace all these sub1 calls by uses
+                            // of the argument itself (maintaining its move status!).
+                            // Then, encode the conditional jump, zero check and decrement using
+                            // a single, superspecialized instruction.
+                            if args.len() == 1 && false_expr.only_use_after_sub(offset, scope, false) {
+                                first_jump_location = instructions.len();
+                                instructions.push(Instr::CondZeroJumpDecr(offset, 0));
+                                let new_false_expr = false_expr.remove_subs_of(offset, scope);
+                                inner_compile(
+                                    new_false_expr,
+                                    state,
+                                    instructions,
+                                    &mut false_expr_var_stats,
+                                )?;
+                                cond_zero_jump = true;
+                            }
                         }
                     }
                 }
             }
 
+            if !cond_zero_jump {
+                inner_compile(test, state, instructions, var_stats)?;
+                // TODO: overwrite proper jump lenght later
+                let orig_len = instructions.len();
+                instructions.push(Instr::CondJump(0));
+            }
+
             inner_compile(false_expr, state, instructions, &mut false_expr_var_stats)?;
-            remove_jump_after_tail_call(instructions, before_len);
+            remove_jump_after_tail_call(instructions);
+            let mid_point = instructions.len();
+            instructions.push(Instr::Jump(0));
+
+            inner_compile(true_expr, state, instructions, var_stats)?;
+            let jump_size = instructions.len() - mid_point;
+            let before_len = instructions.len();
+            instructions.push(Instr::Jump(jump_size));
+
+            remove_jump_after_tail_call(instructions);
 
             let jump_size = instructions.len() - before_len;
-            instructions.push(Instr::CondJump(jump_size));
-            instructions.extend(test_expr_buf.into_iter());
         }
         FinalizedExpr::Lambda(arg_count, scope, body) => {
             instructions.push(Instr::CreateLambda(scope, arg_count, body));
@@ -1210,7 +1216,7 @@ fn inner_compile(
                 .iter()
                 .enumerate()
                 .take_while(|&(idx, buf): &(_, &Vec<_>)| {
-                    if let Instr::MoveArgument(offset) = *buf.index(0) {
+                    if let Instr::MoveArgument(offset) = *buf.last().unwrap() {
                         idx == offset.to_usize()
                     } else {
                         false
@@ -1218,9 +1224,12 @@ fn inner_compile(
                 })
                 .count();
 
-            for (idx, mut buf) in arg_instr_vecs.into_iter().enumerate().rev() {
+            for (idx, mut buf) in arg_instr_vecs.into_iter().enumerate() {
                 if idx < arg_skip_count && is_tail_call {
-                    instructions.extend(buf.drain(1..));
+                    // instructions.extend(buf.drain(1..));
+                    // TODO: make this nicer
+                    instructions.extend(buf.into_iter());
+                    instructions.pop();
                 } else {
                     instructions.extend(buf.into_iter());
                 }

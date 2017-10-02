@@ -57,7 +57,7 @@ impl StackRef {
 
         Ok(StackRef {
             instr_slice: reference,
-            instr_pointer: reference.len(),
+            instr_pointer: 0,
             func: func,
             stack_pointer: stack_pointer,
         })
@@ -76,7 +76,7 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
 
     'l: loop {
         // Pop stack frame when there's no more instructions in this one
-        if frame.instr_pointer == 0 {
+        if frame.instr_pointer == frame.instr_slice.len() {
             // Remove all values except for the last, which is the return value of
             // called function
             let top_index = StackOffset::from(value_stack.len() - 1);
@@ -89,7 +89,7 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
             }
         }
 
-        frame.instr_pointer -= 1;
+        frame.instr_pointer += 1;
 
         match frame.instr_slice[frame.instr_pointer] {
             Instr::VarAddOne(offset) => if let LispValue::Integer(ref mut i) =
@@ -103,7 +103,7 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                 *value_stack.get_mut(frame.stack_pointer + offset).unwrap()
             {
                 if *i == 0 {
-                    frame.instr_pointer -= jump_size;
+                    frame.instr_pointer += jump_size;
                 } else {
                     *i -= 1;
                 }
@@ -188,7 +188,7 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                     let bottom_index = top_index - StackOffset::from(arg_count);
                     remove_old_arguments(&mut value_stack, bottom_index, top_index);
                 }
-                frame.instr_pointer = frame.instr_slice.len();
+                frame.instr_pointer = 0;
             }
             Instr::CreateLambda(scope, arg_count, ref body) => {
                 // If there are any references to function arguments in
@@ -202,11 +202,11 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                 value_stack.push(LispValue::Function(f));
             }
             Instr::Jump(n) => {
-                frame.instr_pointer -= n;
+                frame.instr_pointer += n;
             }
             Instr::CondJump(n) => if let LispValue::Boolean(b) = value_stack.pop().unwrap() {
                 if b {
-                    frame.instr_pointer -= n;
+                    frame.instr_pointer += n;
                 }
             } else {
                 return Err(EvaluationError::ArgumentTypeMismatch);
@@ -293,7 +293,7 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
 
                     // If the called function is not a tail call and there are instructions
                     // left in the calling function, push the old stack frame to the stack.
-                    if push_stack && frame.instr_pointer != 0 {
+                    if push_stack && frame.instr_pointer < frame.instr_slice.len() {
                         frame_stack.push(replace(&mut frame, next_frame));
                     } else {
                         frame = next_frame;
@@ -369,7 +369,7 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
     }
 
     assert!(frame_stack.is_empty());
-    assert_eq!(frame.instr_pointer, 0);
+    assert_eq!(frame.instr_pointer, frame.instr_slice.len());
     assert_eq!(value_stack.len(), 1);
     Ok(value_stack.pop().unwrap())
 }
