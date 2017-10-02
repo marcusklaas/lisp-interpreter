@@ -713,26 +713,48 @@ impl LispExpr {
     }
 
     fn finalize(self, ctx: &mut FinalizationContext) -> EvaluationResult<FinalizedExpr> {
-        Ok(match self {
-            LispExpr::Value(v) => FinalizedExpr::Value(v),
-            LispExpr::OpVar(n) => {
+        // TODO: better name
+        fn deal_with_opvar(
+            expr: LispExpr,
+            ctx: &mut FinalizationContext,
+            caller: Option<BuiltIn>,
+        ) -> EvaluationResult<FinalizedExpr> {
+            if let LispExpr::OpVar(n) = expr {
                 // So if we encounter a symbol, it could be two things:
                 // a function argument, in which case it should be in the arguments map
                 // a reference to something in our state.
                 // Function arguments take precendence.
-                ctx.arguments
-                    .iter_mut()
-                    .rev()
-                    .find(|&&mut (o, _)| o == n)
-                    .map(|&mut (_, (arg_scope, arg_offset, ref mut move_status))| {
-                        FinalizedExpr::Argument(
-                            arg_offset,
-                            arg_scope,
-                            replace(move_status, MoveStatus::FullyMoved),
-                        )
-                    })
-                    .unwrap_or_else(|| FinalizedExpr::Variable(n))
+                Ok(
+                    ctx.arguments
+                        .iter_mut()
+                        .rev()
+                        .find(|&&mut (o, _)| o == n)
+                        .map(|&mut (_, (arg_scope, arg_offset, ref mut move_status))| {
+                            let replacement = match (*move_status, caller) {
+                                (MoveStatus::Unmoved, Some(BuiltIn::Car)) => {
+                                    println!("moved head!");
+                                    MoveStatus::HeadMoved
+                                }
+                                (MoveStatus::Unmoved, Some(BuiltIn::Cdr)) => MoveStatus::TailMoved,
+                                _ => MoveStatus::FullyMoved,
+                            };
+
+                            FinalizedExpr::Argument(
+                                arg_offset,
+                                arg_scope,
+                                replace(move_status, replacement),
+                            )
+                        })
+                        .unwrap_or_else(|| FinalizedExpr::Variable(n)),
+                )
+            } else {
+                expr.finalize(ctx)
             }
+        }
+
+        Ok(match self {
+            LispExpr::Value(v) => FinalizedExpr::Value(v),
+            LispExpr::OpVar(..) => return deal_with_opvar(self, ctx, None),
             LispExpr::Macro(..) => {
                 return Err(EvaluationError::UnexpectedOperator);
             }
@@ -844,8 +866,20 @@ impl LispExpr {
                         // we get the argument moves correctly. The last arguments
                         // get to use the moves first.
                         let mut arg_finalized_expr = Vec::with_capacity(expr_iter.size_hint().0);
+                        let caller = if let LispExpr::Value(
+                            LispValue::Function(LispFunc::BuiltIn(builtin)),
+                        ) = head_expr
+                        {
+                            //println!("found builtin!");
+                            Some(builtin)
+                        } else {
+                            None
+                        };
+
                         for e in expr_iter.rev() {
-                            arg_finalized_expr.push(e.finalize(ctx)?);
+                            let arg = deal_with_opvar(e, ctx, caller)?;
+                            arg_finalized_expr.push(arg);
+                            //arg_finalized_expr.push(e.finalize(ctx)?);
                         }
                         arg_finalized_expr.reverse();
 
@@ -892,6 +926,8 @@ impl LispExpr {
 enum MoveStatus {
     FullyMoved,
     Unmoved,
+    TailMoved,
+    HeadMoved,
 }
 
 impl MoveStatus {
@@ -975,12 +1011,19 @@ fn builtin_instr(f: BuiltIn, arg_count: usize) -> EvaluationResult<Instr> {
     })
 }
 
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum VarStatus {
+    HeadMoved,
+    TailMoved,
+}
+
 // Compiles a finalized expression into instructions and writes them to the
 // given buffer *in reverse order*
 fn inner_compile(
     expr: FinalizedExpr,
     state: &State,
     instructions: &mut Vec<Instr>,
+    var_stats: &mut Vec<(StackOffset, Scope, VarStatus)>,
 ) -> EvaluationResult<()> {
     match expr {
         FinalizedExpr::Argument(offset, _scope, MoveStatus::Unmoved) => {
@@ -1002,8 +1045,16 @@ fn inner_compile(
         FinalizedExpr::Cond(triple) => {
             let unpacked = *triple;
             let (test, true_expr, false_expr) = unpacked;
+
+            // FIXME: this is all a horrible mess. FIX ASAP
+            let test_clone = test.clone();
+
+            let mut test_expr_buf = Vec::new();
+            inner_compile(test, state, &mut test_expr_buf, var_stats)?;
+            let mut false_expr_var_stats = var_stats.clone();
+
             let before_len = instructions.len();
-            inner_compile(true_expr, state, instructions)?;
+            inner_compile(true_expr, state, instructions, var_stats)?;
             let jump_size = instructions.len() - before_len;
             let before_len = instructions.len();
             instructions.push(Instr::Jump(jump_size));
@@ -1018,7 +1069,7 @@ fn inner_compile(
                 }
             }
 
-            if let FinalizedExpr::FunctionCall(ref f_box, ref args, ..) = test {
+            if let FinalizedExpr::FunctionCall(ref f_box, ref args, ..) = test_clone {
                 if let FinalizedExpr::Value(
                     LispValue::Function(LispFunc::BuiltIn(BuiltIn::CheckZero)),
                 ) = **f_box
@@ -1034,7 +1085,12 @@ fn inner_compile(
                         // a single, superspecialized instruction.
                         if args.len() == 1 && false_expr.only_use_after_sub(offset, scope, false) {
                             let new_false_expr = false_expr.remove_subs_of(offset, scope);
-                            inner_compile(new_false_expr, state, instructions)?;
+                            inner_compile(
+                                new_false_expr,
+                                state,
+                                instructions,
+                                &mut false_expr_var_stats,
+                            )?;
                             remove_jump_after_tail_call(instructions, before_len);
                             let jump_size = instructions.len() - before_len;
                             instructions.push(Instr::CondZeroJumpDecr(offset, jump_size));
@@ -1045,12 +1101,12 @@ fn inner_compile(
                 }
             }
 
-            inner_compile(false_expr, state, instructions)?;
+            inner_compile(false_expr, state, instructions, &mut false_expr_var_stats)?;
             remove_jump_after_tail_call(instructions, before_len);
 
             let jump_size = instructions.len() - before_len;
             instructions.push(Instr::CondJump(jump_size));
-            inner_compile(test, state, instructions)?;
+            instructions.extend(test_expr_buf.into_iter());
         }
         FinalizedExpr::Lambda(arg_count, scope, body) => {
             instructions.push(Instr::CreateLambda(scope, arg_count, body));
@@ -1058,10 +1114,10 @@ fn inner_compile(
         FinalizedExpr::FunctionCall(funk, args, is_tail_call, is_self_call) => {
             if let FinalizedExpr::Value(LispValue::Function(LispFunc::BuiltIn(bf))) = *funk {
                 let single_variable =
-                    if let Some(&FinalizedExpr::Argument(offset, _scope, move_status)) = args.get(0)
+                    if let Some(&FinalizedExpr::Argument(offset, scope, move_status)) = args.get(0)
                     {
                         if args.len() == 1 {
-                            Some((offset, move_status))
+                            Some((offset, scope, move_status))
                         } else {
                             None
                         }
@@ -1070,6 +1126,23 @@ fn inner_compile(
                     };
 
                 match (bf, single_variable) {
+                    (BuiltIn::Car, Some((offset, scope, MoveStatus::TailMoved))) => {
+                        instructions.push(Instr::VarSplit(offset));
+                        var_stats.push((offset, scope, VarStatus::HeadMoved));
+                        return Ok(());
+                    }
+                    (BuiltIn::Cdr, Some((offset, scope, MoveStatus::Unmoved))) => {
+                        if var_stats.iter().any(|&(o, s, v)| {
+                            o == offset && s == scope && v == VarStatus::HeadMoved
+                        }) {
+                            // Head was previously removed. We can just move the remainder
+                            instructions.push(Instr::MoveArgument(offset));
+                            return Ok(());
+                        } else {
+                            // Head is still on.
+                            instructions.push(builtin_instr(BuiltIn::Cdr, 1)?);
+                        }
+                    }
                     (BuiltIn::Car, Some((offset, ..))) |
                     (BuiltIn::CheckNull, Some((offset, ..))) |
                     (BuiltIn::CheckZero, Some((offset, ..))) => {
@@ -1082,7 +1155,7 @@ fn inner_compile(
                         });
                         return Ok(());
                     }
-                    (BuiltIn::AddOne, Some((offset, MoveStatus::Unmoved))) => {
+                    (BuiltIn::AddOne, Some((offset, _scope, MoveStatus::Unmoved))) => {
                         instructions.push(Instr::MoveArgument(offset));
                         instructions.push(Instr::VarAddOne(offset));
                         return Ok(());
@@ -1101,15 +1174,15 @@ fn inner_compile(
                 if is_self_call {
                     instructions.push(Instr::Recurse(args_len));
                 } else {
-                    instructions.push(Instr::EvalFunction(args_len, Some(0)));
-                    inner_compile(*funk, state, instructions)?;
+                    instructions.push(Instr::EvalFunction(args_len, None));
+                    inner_compile(*funk, state, instructions, var_stats)?;
                 }
 
                 // Compiling all arguments
                 let arg_instr_vecs: Vec<_> = args.into_iter()
                     .map(|expr| {
                         let mut sub_buf = Vec::new();
-                        inner_compile(expr, state, &mut sub_buf)?;
+                        inner_compile(expr, state, &mut sub_buf, var_stats)?;
                         Ok(sub_buf)
                     })
                     .collect::<Result<_, _>>()?;
@@ -1145,12 +1218,24 @@ fn inner_compile(
                 return Ok(());
             } else {
                 instructions.push(Instr::EvalFunction(args.len(), None));
-                inner_compile(*funk, state, instructions)?;
+                inner_compile(*funk, state, instructions, var_stats)?;
             };
 
-            for expr in args.into_iter().rev() {
-                inner_compile(expr, state, instructions)?;
+            let instr_vec_vec = args.into_iter()
+                .map(|expr| {
+                    let mut sub_buf = Vec::new();
+                    inner_compile(expr, state, &mut sub_buf, var_stats)?;
+                    Ok(sub_buf)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
+            for instr_vec in instr_vec_vec.into_iter().rev() {
+                instructions.extend(instr_vec.into_iter());
             }
+
+            // for expr in args.into_iter().rev() {
+            //     inner_compile(expr, state, instructions, var_stats)?;
+            // }
         }
     }
 
@@ -1160,7 +1245,7 @@ fn inner_compile(
 fn compile_finalized_expr(expr: FinalizedExpr, state: &State) -> EvaluationResult<Vec<Instr>> {
     let mut instructions = Vec::with_capacity(32);
 
-    inner_compile(expr, state, &mut instructions)?;
+    inner_compile(expr, state, &mut instructions, &mut Vec::new())?;
 
     Ok(instructions)
 }
