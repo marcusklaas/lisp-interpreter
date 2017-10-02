@@ -604,6 +604,9 @@ enum Instr {
     /// Identical to VarCar, except that it replaces the variable at the
     /// given offset by its Cdr.
     VarSplit(StackOffset),
+    /// Replaces the list at the given offset by its head and places the
+    /// tail at the top of the value stack.
+    VarReverseSplit(StackOffset),
     /// Checks whether a variable with given offset is zero and pushes
     /// the result to the stack
     VarCheckZero(StackOffset),
@@ -731,10 +734,7 @@ impl LispExpr {
                         .find(|&&mut (o, _)| o == n)
                         .map(|&mut (_, (arg_scope, arg_offset, ref mut move_status))| {
                             let replacement = match (*move_status, caller) {
-                                (MoveStatus::Unmoved, Some(BuiltIn::Car)) => {
-                                    println!("moved head!");
-                                    MoveStatus::HeadMoved
-                                }
+                                (MoveStatus::Unmoved, Some(BuiltIn::Car)) => MoveStatus::HeadMoved,
                                 (MoveStatus::Unmoved, Some(BuiltIn::Cdr)) => MoveStatus::TailMoved,
                                 _ => MoveStatus::FullyMoved,
                             };
@@ -870,7 +870,6 @@ impl LispExpr {
                             LispValue::Function(LispFunc::BuiltIn(builtin)),
                         ) = head_expr
                         {
-                            //println!("found builtin!");
                             Some(builtin)
                         } else {
                             None
@@ -879,7 +878,6 @@ impl LispExpr {
                         for e in expr_iter.rev() {
                             let arg = deal_with_opvar(e, ctx, caller)?;
                             arg_finalized_expr.push(arg);
-                            //arg_finalized_expr.push(e.finalize(ctx)?);
                         }
                         arg_finalized_expr.reverse();
 
@@ -1141,6 +1139,24 @@ fn inner_compile(
                         } else {
                             // Head is still on.
                             instructions.push(builtin_instr(BuiltIn::Cdr, 1)?);
+                        }
+                    }
+                    (BuiltIn::Cdr, Some((offset, scope, MoveStatus::HeadMoved))) => {
+                        instructions.push(Instr::VarReverseSplit(offset));
+                        var_stats.push((offset, scope, VarStatus::TailMoved));
+                        return Ok(());
+                    }
+                    (BuiltIn::Car, Some((offset, scope, MoveStatus::Unmoved))) => {
+                        if var_stats.iter().any(|&(o, s, v)| {
+                            o == offset && s == scope && v == VarStatus::TailMoved
+                        }) {
+                            // Tail was previously removed. We can just move the head
+                            instructions.push(Instr::MoveArgument(offset));
+                            return Ok(());
+                        } else {
+                            // Tail is still on.
+                            instructions.push(Instr::VarCar(offset));
+                            return Ok(());
                         }
                     }
                     (BuiltIn::Car, Some((offset, ..))) |

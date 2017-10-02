@@ -147,6 +147,26 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
 
                 value_stack.push(head);
             }
+            Instr::VarReverseSplit(offset) => {
+                // TODO: see if we can do this more efficiently/ elegantly
+                let tail = {
+                    let reference = value_stack.get_mut(frame.stack_pointer + offset).unwrap();
+                    let mut head = if let LispValue::List(ref mut list) = *reference {
+                        if let Some(elem) = list.pop() {
+                            elem
+                        } else {
+                            return Err(EvaluationError::EmptyList);
+                        }
+                    } else {
+                        return Err(EvaluationError::ArgumentTypeMismatch);
+                    };
+
+                    ::std::mem::swap(&mut head, reference);
+                    head
+                };
+
+                value_stack.push(tail);
+            }
             Instr::VarCar(offset) => {
                 let head = if let LispValue::List(ref list) =
                     *value_stack.get(frame.stack_pointer + offset).unwrap()
