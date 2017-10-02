@@ -455,9 +455,9 @@ impl FinalizedExpr {
             }
             FinalizedExpr::Cond(ref boks) => {
                 let (ref test, ref true_expr, ref false_expr) = **boks;
-                test.only_use_after_sub(offset, scope, false) &&
-                    true_expr.only_use_after_sub(offset, scope, false) &&
-                    false_expr.only_use_after_sub(offset, scope, false)
+                test.only_use_after_sub(offset, scope, false)
+                    && true_expr.only_use_after_sub(offset, scope, false)
+                    && false_expr.only_use_after_sub(offset, scope, false)
             }
             FinalizedExpr::Variable(..) | FinalizedExpr::Value(..) => true,
             FinalizedExpr::Lambda(_, _, ref body) => body.only_use_after_sub(offset, scope, false),
@@ -466,8 +466,8 @@ impl FinalizedExpr {
                     LispValue::Function(LispFunc::BuiltIn(BuiltIn::SubOne)),
                 ) == **f;
 
-                f.only_use_after_sub(offset, scope, is_sub) &&
-                    args.iter()
+                f.only_use_after_sub(offset, scope, is_sub)
+                    && args.iter()
                         .all(|a| a.only_use_after_sub(offset, scope, is_sub))
             }
         }
@@ -1248,10 +1248,6 @@ fn inner_compile(
             for instr_vec in instr_vec_vec.into_iter().rev() {
                 instructions.extend(instr_vec.into_iter());
             }
-
-            // for expr in args.into_iter().rev() {
-            //     inner_compile(expr, state, instructions, var_stats)?;
-            // }
         }
     }
 
@@ -1321,71 +1317,89 @@ mod tests {
         assert_eq!(expected_err, check_lisp(&mut state, commands).unwrap_err());
     }
 
+    fn get_bytecode(definition: &str, self_name: &str) -> Vec<Instr> {
+        let mut state = State::default();
+        check_lisp(
+            &mut state,
+            vec![&format!("(define {} 1337)", self_name)[..]],
+        ).unwrap();
+        let intern = state.intern(self_name);
+        let expr = super::parse::parse_lisp_string(definition, &mut state).unwrap();
+        let mut finalization_ctx = super::FinalizationContext::new(Some(intern));
+        let finalized_expr = expr.finalize(&mut finalization_ctx).unwrap();
+
+        if let FinalizedExpr::Lambda(.., body) = finalized_expr {
+            super::compile_finalized_expr(*body, &mut state).unwrap()
+        } else {
+            super::compile_finalized_expr(finalized_expr, &mut state).unwrap()
+        }
+    }
+
     #[test]
     fn add_bytecode() {
-        let mut state = State::default();
-        let add = check_lisp(
-            &mut state,
-            vec![
-                "(define add (lambda (x y) (cond (zero? y) x (add (add1 x) (sub1 y)))))",
-                "(add 0 0)",
-                "(car (list add))",
-            ],
-        ).unwrap();
+        let bytecode = get_bytecode(
+            "(lambda (x y) (cond (zero? y) x (add (add1 x) (sub1 y))))",
+            "add",
+        );
 
-        match add {
-            LispValue::Function(LispFunc::Custom(f)) => {
-                assert_eq!(
-                    vec![
-                        Instr::MoveArgument(From::from(0)),
-                        Instr::Recurse(0),
-                        Instr::VarAddOne(From::from(0)),
-                        Instr::CondZeroJumpDecr(From::from(1), 2),
-                    ],
-                    unsafe { f.0.byte_code.get().as_ref().unwrap().clone() }
-                );
-            }
-            _ => panic!("expected function!"),
-        }
+        assert_eq!(
+            bytecode,
+            vec![
+                Instr::MoveArgument(From::from(0)),
+                Instr::Recurse(0),
+                Instr::VarAddOne(From::from(0)),
+                Instr::CondZeroJumpDecr(From::from(1), 2),
+            ]
+        );
     }
 
-    // TODO: add helper function for bytecode testing
     #[test]
     fn map_bytecode() {
-        let mut state = State::default();
-        // FIXME: this is a gimped map that doesn't recurse
-        let map = check_lisp(
-            &mut state,
-            vec![
-                "(define map (lambda (f xs) (cond (null? xs) xs (cons (f (car xs)) (list)))))",
-                "(map add1 (list 1 2 3))",
-                "(car (list map))",
-            ],
-        ).unwrap();
+        let bytecode = get_bytecode(
+            "(lambda (f xs) (cond (null? xs) xs (cons (f (car xs)) (map f (cdr xs)))))",
+            "map",
+        );
 
-        match map {
-            LispValue::Function(LispFunc::Custom(f)) => {
-                assert_eq!(
-                    vec![
-                        Instr::MoveArgument(From::from(1)),
-                        Instr::Jump(1),
-                        Instr::Cons,
-                        Instr::List(0),
-                        Instr::EvalFunction(1, None),
-                        Instr::MoveArgument(From::from(0)),
-                        Instr::VarCar(From::from(1)),
-                        Instr::CondJump(6),
-                        Instr::VarCheckNull(From::from(1)),
-                    ],
-                    unsafe { f.0.byte_code.get().as_ref().unwrap().clone() }
-                );
-            }
-            _ => panic!("expected function!"),
-        }
+        assert_eq!(
+            bytecode,
+            vec![
+                Instr::MoveArgument(From::from(1)),
+                Instr::Jump(1),
+                Instr::Cons,
+                Instr::EvalFunction(2, None),
+                // 1337 is the magic number representing the function itself
+                Instr::PushValue(LispValue::Integer(1337)),
+                Instr::MoveArgument(From::from(1)),
+                Instr::MoveArgument(From::from(0)),
+                Instr::EvalFunction(1, None),
+                Instr::CloneArgument(From::from(0)),
+                Instr::VarSplit(From::from(1)),
+                Instr::CondJump(9),
+                Instr::VarCheckNull(From::from(1)),
+            ]
+        );
     }
 
-    // TODO: add test for partial copy recursive functions. filter is such an
-    // example, but it's not immediatly clear
+    #[test]
+    fn comp_bytecode() {
+        let bytecode = get_bytecode(
+            "(lambda (x y) (cond (zero? x) #f (cond (zero? y) #t (> (sub1 x) (sub1 y)))))",
+            ">",
+        );
+        assert_eq!(
+            bytecode,
+            vec![
+                Instr::PushValue(LispValue::Boolean(false)),
+                Instr::Jump(1),
+                Instr::PushValue(LispValue::Boolean(true)),
+                Instr::Recurse(0),
+                Instr::CondZeroJumpDecr(From::from(1), 1),
+                Instr::CondZeroJumpDecr(From::from(0), 4),
+            ]
+        );
+    }
+
+    // TODO: add test for partial copy recursive functions.
 
     #[test]
     fn shadowing() {
