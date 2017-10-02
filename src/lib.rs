@@ -340,7 +340,7 @@ impl LispFunc {
         ));
         let arg_vec = args.map(FinalizedExpr::Value)
             .chain((0..total_args - supplied_args).map(From::from).map(|o| {
-                FinalizedExpr::Argument(o, Scope::default(), MoveStatus::Unmoved)
+                FinalizedExpr::Argument(o, Scope::default(), VariableConstraint::Unconstrained)
             }))
             .collect();
 
@@ -398,7 +398,7 @@ enum FinalizedExpr {
     Cond(Box<(FinalizedExpr, FinalizedExpr, FinalizedExpr)>),
     Variable(InternedString),
     Value(LispValue),
-    Argument(StackOffset, Scope, MoveStatus),
+    Argument(StackOffset, Scope, VariableConstraint),
     // function, arguments, tail-call, self-call
     FunctionCall(Box<FinalizedExpr>, Vec<FinalizedExpr>, bool, bool),
 }
@@ -477,7 +477,7 @@ impl FinalizedExpr {
     fn replace_args(&self, scope_level: Scope, stack: &mut [LispValue]) -> FinalizedExpr {
         match *self {
             FinalizedExpr::Argument(index, arg_scope, move_status) if arg_scope < scope_level => {
-                if move_status == MoveStatus::Unmoved {
+                if move_status == VariableConstraint::Unconstrained {
                     FinalizedExpr::Value(replace(&mut stack[index], LispValue::Boolean(false)))
                 } else {
                     FinalizedExpr::Value(stack[index].clone())
@@ -514,7 +514,7 @@ impl FinalizedExpr {
         match *self {
             FinalizedExpr::Argument(offset, scope, move_status) => format!(
                 "{}$({:?}, {})",
-                if move_status == MoveStatus::Unmoved {
+                if move_status == VariableConstraint::Unconstrained {
                     "m"
                 } else {
                     ""
@@ -669,7 +669,7 @@ pub enum LispExpr {
 
 struct FinalizationContext {
     scope_level: Scope,
-    arguments: Vec<(InternedString, (Scope, StackOffset, MoveStatus))>,
+    arguments: Vec<(InternedString, (Scope, StackOffset, VariableConstraint))>,
     can_tail_call: bool,
     own_name: Option<InternedString>,
 }
@@ -734,9 +734,13 @@ impl LispExpr {
                         .find(|&&mut (o, _)| o == n)
                         .map(|&mut (_, (arg_scope, arg_offset, ref mut move_status))| {
                             let replacement = match (*move_status, caller) {
-                                (MoveStatus::Unmoved, Some(BuiltIn::Car)) => MoveStatus::HeadMoved,
-                                (MoveStatus::Unmoved, Some(BuiltIn::Cdr)) => MoveStatus::TailMoved,
-                                _ => MoveStatus::FullyMoved,
+                                (VariableConstraint::Unconstrained, Some(BuiltIn::Car)) => {
+                                    VariableConstraint::RemovedHead
+                                }
+                                (VariableConstraint::Unconstrained, Some(BuiltIn::Cdr)) => {
+                                    VariableConstraint::RemovedTail
+                                }
+                                _ => VariableConstraint::NeedFull,
                             };
 
                             FinalizedExpr::Argument(
@@ -818,7 +822,7 @@ impl LispExpr {
                                         (
                                             ctx.scope_level,
                                             StackOffset::from(offset),
-                                            MoveStatus::Unmoved,
+                                            VariableConstraint::Unconstrained,
                                         ),
                                     ));
                                 }
@@ -921,19 +925,19 @@ impl LispExpr {
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
-enum MoveStatus {
-    FullyMoved,
-    Unmoved,
-    TailMoved,
-    HeadMoved,
+enum VariableConstraint {
+    NeedFull,
+    Unconstrained,
+    RemovedTail,
+    RemovedHead,
 }
 
-impl MoveStatus {
+impl VariableConstraint {
     fn combine(self, other: Self) -> Self {
         if self == other {
             self
         } else {
-            MoveStatus::FullyMoved
+            VariableConstraint::NeedFull
         }
     }
 }
@@ -1011,8 +1015,8 @@ fn builtin_instr(f: BuiltIn, arg_count: usize) -> EvaluationResult<Instr> {
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 enum VarStatus {
-    HeadMoved,
-    TailMoved,
+    RemovedHead,
+    RemovedTail,
 }
 
 // Compiles a finalized expression into instructions and writes them to the
@@ -1024,7 +1028,7 @@ fn inner_compile(
     var_stats: &mut Vec<(StackOffset, Scope, VarStatus)>,
 ) -> EvaluationResult<()> {
     match expr {
-        FinalizedExpr::Argument(offset, _scope, MoveStatus::Unmoved) => {
+        FinalizedExpr::Argument(offset, _scope, VariableConstraint::Unconstrained) => {
             instructions.push(Instr::MoveArgument(offset));
         }
         FinalizedExpr::Argument(offset, _scope, _move_status) => {
@@ -1045,6 +1049,8 @@ fn inner_compile(
             let (test, true_expr, false_expr) = unpacked;
 
             // FIXME: this is all a horrible mess. FIX ASAP
+            // Probably the only reasonable way to do this is by unreversing.
+            // Doing that at this point will be a pain in the neck, though.
             let test_clone = test.clone();
 
             let mut test_expr_buf = Vec::new();
@@ -1110,143 +1116,122 @@ fn inner_compile(
             instructions.push(Instr::CreateLambda(scope, arg_count, body));
         }
         FinalizedExpr::FunctionCall(funk, args, is_tail_call, is_self_call) => {
+            // Here we check for special patterns of builtin functions on single
+            // arguments and try to generate specialized instructions for them.
             if let FinalizedExpr::Value(LispValue::Function(LispFunc::BuiltIn(bf))) = *funk {
-                let single_variable =
-                    if let Some(&FinalizedExpr::Argument(offset, scope, move_status)) = args.get(0)
-                    {
-                        if args.len() == 1 {
-                            Some((offset, scope, move_status))
-                        } else {
-                            None
+                if let Some(&FinalizedExpr::Argument(offset, scope, move_status)) = args.get(0) {
+                    match (bf, offset, scope, move_status) {
+                        (BuiltIn::Car, offset, scope, VariableConstraint::RemovedTail) => {
+                            instructions.push(Instr::VarSplit(offset));
+                            var_stats.push((offset, scope, VarStatus::RemovedHead));
+                            return Ok(());
                         }
-                    } else {
-                        None
-                    };
-
-                match (bf, single_variable) {
-                    (BuiltIn::Car, Some((offset, scope, MoveStatus::TailMoved))) => {
-                        instructions.push(Instr::VarSplit(offset));
-                        var_stats.push((offset, scope, VarStatus::HeadMoved));
-                        return Ok(());
-                    }
-                    (BuiltIn::Cdr, Some((offset, scope, MoveStatus::Unmoved))) => {
-                        if var_stats.iter().any(|&(o, s, v)| {
-                            o == offset && s == scope && v == VarStatus::HeadMoved
-                        }) {
-                            // Head was previously removed. We can just move the remainder
+                        (BuiltIn::Cdr, offset, scope, VariableConstraint::Unconstrained) => {
+                            if var_stats.iter().any(|&(o, s, v)| {
+                                o == offset && s == scope && v == VarStatus::RemovedHead
+                            }) {
+                                // Head was previously removed. We can just move the remainder
+                                instructions.push(Instr::MoveArgument(offset));
+                                return Ok(());
+                            }
+                        }
+                        (BuiltIn::Cdr, offset, scope, VariableConstraint::RemovedHead) => {
+                            instructions.push(Instr::VarReverseSplit(offset));
+                            var_stats.push((offset, scope, VarStatus::RemovedTail));
+                            return Ok(());
+                        }
+                        (BuiltIn::Car, offset, scope, VariableConstraint::Unconstrained) => {
+                            if var_stats.iter().any(|&(o, s, v)| {
+                                o == offset && s == scope && v == VarStatus::RemovedTail
+                            }) {
+                                // Tail was previously removed. We can just move the head
+                                instructions.push(Instr::MoveArgument(offset));
+                            } else {
+                                // Tail is still on.
+                                instructions.push(Instr::VarCar(offset));
+                            }
+                            return Ok(());
+                        }
+                        (BuiltIn::Car, offset, ..) |
+                        (BuiltIn::CheckNull, offset, ..) |
+                        (BuiltIn::CheckZero, offset, ..) => {
+                            // Inspection mode!
+                            instructions.push(match bf {
+                                BuiltIn::CheckNull => Instr::VarCheckNull(offset),
+                                BuiltIn::CheckZero => Instr::VarCheckZero(offset),
+                                BuiltIn::Car => Instr::VarCar(offset),
+                                _ => unreachable!(),
+                            });
+                            return Ok(());
+                        }
+                        (BuiltIn::AddOne, offset, _scope, VariableConstraint::Unconstrained) => {
                             instructions.push(Instr::MoveArgument(offset));
-                            return Ok(());
-                        } else {
-                            // Head is still on.
-                            instructions.push(builtin_instr(BuiltIn::Cdr, 1)?);
-                        }
-                    }
-                    (BuiltIn::Cdr, Some((offset, scope, MoveStatus::HeadMoved))) => {
-                        instructions.push(Instr::VarReverseSplit(offset));
-                        var_stats.push((offset, scope, VarStatus::TailMoved));
-                        return Ok(());
-                    }
-                    (BuiltIn::Car, Some((offset, scope, MoveStatus::Unmoved))) => {
-                        if var_stats.iter().any(|&(o, s, v)| {
-                            o == offset && s == scope && v == VarStatus::TailMoved
-                        }) {
-                            // Tail was previously removed. We can just move the head
-                            instructions.push(Instr::MoveArgument(offset));
-                            return Ok(());
-                        } else {
-                            // Tail is still on.
-                            instructions.push(Instr::VarCar(offset));
+                            instructions.push(Instr::VarAddOne(offset));
                             return Ok(());
                         }
+                        (..) => {}
                     }
-                    (BuiltIn::Car, Some((offset, ..))) |
-                    (BuiltIn::CheckNull, Some((offset, ..))) |
-                    (BuiltIn::CheckZero, Some((offset, ..))) => {
-                        // Inspection mode!
-                        instructions.push(match bf {
-                            BuiltIn::CheckNull => Instr::VarCheckNull(offset),
-                            BuiltIn::CheckZero => Instr::VarCheckZero(offset),
-                            BuiltIn::Car => Instr::VarCar(offset),
-                            _ => unreachable!(),
-                        });
-                        return Ok(());
-                    }
-                    (BuiltIn::AddOne, Some((offset, _scope, MoveStatus::Unmoved))) => {
-                        instructions.push(Instr::MoveArgument(offset));
-                        instructions.push(Instr::VarAddOne(offset));
-                        return Ok(());
-                    }
-                    (f, _) => instructions.push(builtin_instr(f, args.len())?),
                 }
-            } else if is_tail_call {
-                // Here, for tail calls, we try to reuse function arguments
-                // and elide copies thereof. For strict recursions, it's
-                // possible to do a (partial) elision when some non-zero prefix
-                // of the called function arguments is an in-order move from the
-                // prefix of the calling function.
-                let args_len = args.len();
-                let init_len = instructions.len();
+            }
 
-                if is_self_call {
-                    instructions.push(Instr::Recurse(args_len));
+            // Here, for tail calls, we try to reuse function arguments
+            // and elide copies thereof. For strict recursions, it's
+            // possible to do a (partial) elision when some non-zero prefix
+            // of the called function arguments is an in-order move from the
+            // prefix of the calling function.
+            let args_len = args.len();
+            let init_len = instructions.len();
+            let builtin =
+                if let FinalizedExpr::Value(LispValue::Function(LispFunc::BuiltIn(bf))) = *funk {
+                    Some(bf)
                 } else {
-                    instructions.push(Instr::EvalFunction(args_len, None));
-                    inner_compile(*funk, state, instructions, var_stats)?;
-                }
+                    None
+                };
 
-                // Compiling all arguments
-                let arg_instr_vecs: Vec<_> = args.into_iter()
-                    .map(|expr| {
-                        let mut sub_buf = Vec::new();
-                        inner_compile(expr, state, &mut sub_buf, var_stats)?;
-                        Ok(sub_buf)
-                    })
-                    .collect::<Result<_, _>>()?;
-
-                let arg_skip_count = arg_instr_vecs
-                    .iter()
-                    .enumerate()
-                    .take_while(|&(idx, buf): &(_, &Vec<_>)| {
-                        if let Instr::MoveArgument(offset) = *buf.index(0) {
-                            idx == offset.to_usize()
-                        } else {
-                            false
-                        }
-                    })
-                    .count();
-
-                for (idx, mut buf) in arg_instr_vecs.into_iter().enumerate().rev() {
-                    if idx < arg_skip_count {
-                        instructions.extend(buf.drain(1..));
-                    } else {
-                        instructions.extend(buf.into_iter());
-                    }
-                }
-
-                if is_self_call {
-                    // Store the number of copies that we have to be for
-                    // execution time.
-                    instructions[init_len] = Instr::Recurse(args_len - arg_skip_count);
-                } else {
-                    instructions[init_len] = Instr::EvalFunction(args_len, Some(arg_skip_count));
-                }
-
-                return Ok(());
+            if let Some(bf) = builtin {
+                instructions.push(builtin_instr(bf, args_len)?);
+            } else if is_self_call && is_tail_call {
+                instructions.push(Instr::Recurse(args_len));
             } else {
-                instructions.push(Instr::EvalFunction(args.len(), None));
+                instructions.push(Instr::EvalFunction(args_len, None));
                 inner_compile(*funk, state, instructions, var_stats)?;
-            };
+            }
 
-            let instr_vec_vec = args.into_iter()
+            // Compiling all arguments
+            let arg_instr_vecs: Vec<_> = args.into_iter()
                 .map(|expr| {
                     let mut sub_buf = Vec::new();
                     inner_compile(expr, state, &mut sub_buf, var_stats)?;
                     Ok(sub_buf)
                 })
-                .collect::<Result<Vec<_>, _>>()?;
+                .collect::<Result<_, _>>()?;
 
-            for instr_vec in instr_vec_vec.into_iter().rev() {
-                instructions.extend(instr_vec.into_iter());
+            let arg_skip_count = arg_instr_vecs
+                .iter()
+                .enumerate()
+                .take_while(|&(idx, buf): &(_, &Vec<_>)| {
+                    if let Instr::MoveArgument(offset) = *buf.index(0) {
+                        idx == offset.to_usize()
+                    } else {
+                        false
+                    }
+                })
+                .count();
+
+            for (idx, mut buf) in arg_instr_vecs.into_iter().enumerate().rev() {
+                if idx < arg_skip_count && is_tail_call {
+                    instructions.extend(buf.drain(1..));
+                } else {
+                    instructions.extend(buf.into_iter());
+                }
+            }
+
+            if is_self_call && is_tail_call {
+                // Store the number of copies that we have to be for
+                // execution time.
+                instructions[init_len] = Instr::Recurse(args_len - arg_skip_count);
+            } else if is_tail_call && !builtin.is_some() {
+                instructions[init_len] = Instr::EvalFunction(args_len, Some(arg_skip_count));
             }
         }
     }
