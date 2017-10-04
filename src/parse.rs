@@ -79,44 +79,56 @@ impl<'a> Iterator for Tokens<'a> {
 
 pub fn parse_lisp_string(lit: &str, state: &mut State) -> Result<LispExpr, ParseError> {
     let mut tokens = Tokens::from_str(lit);
-    // Strip the first token which we assume to be an opening paren, since
-    // parse_lisp does not expect it.
-    let _ = tokens.next();
-
-    let result = parse_lisp(&mut tokens, state);
-
-    match tokens.next() {
-        None => result.map(LispExpr::Call),
-        Some(_) => Err(ParseError::UnbalancedParens),
+    let first_token = if let Some(t) = tokens.next() {
+        t
+    } else {
+        return Err(ParseError::UnbalancedParens);
+    };
+    let res = parse_expr(first_token, &mut tokens, state)?;
+    if !tokens.next().is_none() {
+        return Err(ParseError::UnbalancedParens);
     }
+    Ok(res)
 }
 
 // Tries to parse an iterator of tokens into a list of expressions.
 // Expects the opening parenthesis to be stripped.
-fn parse_lisp(tokens: &mut Tokens, state: &mut State) -> Result<Vec<LispExpr>, ParseError> {
+fn parse_call(tokens: &mut Tokens, state: &mut State) -> Result<Vec<LispExpr>, ParseError> {
     let mut stack = Vec::new();
 
     while let Some(token) = tokens.next() {
-        let next_token = match token {
-            Token::OpenParen => LispExpr::Call(parse_lisp(tokens, state)?),
-            Token::CloseParen => return Ok(stack),
-            Token::Integer(l) => LispExpr::Value(LispValue::Integer(l)),
-            Token::OpVar(o) => if let Some(mac) = LispMacro::from_str(&o) {
-                LispExpr::Macro(mac)
-            } else if let Some(built_in) = BuiltIn::from_str(&o) {
-                LispExpr::Value(LispValue::Function(LispFunc::BuiltIn(built_in)))
-            } else if o == "#t" {
-                LispExpr::Value(LispValue::Boolean(true))
-            } else if o == "#f" {
-                LispExpr::Value(LispValue::Boolean(false))
-            } else {
-                LispExpr::OpVar(state.intern(o))
-            },
-        };
-        stack.push(next_token);
+        if let Token::CloseParen = token {
+            return Ok(stack);
+        } else {
+            let next_expr = parse_expr(token, tokens, state)?;
+            stack.push(next_expr);
+        }
     }
 
     Err(ParseError::UnbalancedParens)
+}
+
+fn parse_expr(
+    token: Token,
+    tokens: &mut Tokens,
+    state: &mut State,
+) -> Result<LispExpr, ParseError> {
+    Ok(match token {
+        Token::OpenParen => LispExpr::Call(parse_call(tokens, state)?),
+        Token::CloseParen => return Err(ParseError::UnbalancedParens),
+        Token::Integer(l) => LispExpr::Value(LispValue::Integer(l)),
+        Token::OpVar(o) => if let Some(mac) = LispMacro::from_str(&o) {
+            LispExpr::Macro(mac)
+        } else if let Some(built_in) = BuiltIn::from_str(&o) {
+            LispExpr::Value(LispValue::Function(LispFunc::BuiltIn(built_in)))
+        } else if o == "#t" {
+            LispExpr::Value(LispValue::Boolean(true))
+        } else if o == "#f" {
+            LispExpr::Value(LispValue::Boolean(false))
+        } else {
+            LispExpr::OpVar(state.intern(o))
+        },
+    })
 }
 
 #[cfg(test)]
@@ -127,6 +139,26 @@ mod tests {
     fn parse_double_parens() {
         let lit = "(())";
         let expected = Ok(LispExpr::Call(vec![LispExpr::Call(vec![])]));
+
+        let result = parse_lisp_string(lit, &mut State::default());
+        assert_eq!(expected, result);
+    }
+
+    #[test]
+    fn parse_simple_builtin() {
+        let lit = "add1";
+        let expected = Ok(LispExpr::Value(
+            LispValue::Function(LispFunc::BuiltIn(BuiltIn::AddOne)),
+        ));
+
+        let result = parse_lisp_string(lit, &mut State::default());
+        assert_eq!(expected, result);
+    }
+
+    #[test]
+    fn parse_double_closing_parens() {
+        let lit = "(list))";
+        let expected = Err(ParseError::UnbalancedParens);
 
         let result = parse_lisp_string(lit, &mut State::default());
         assert_eq!(expected, result);
