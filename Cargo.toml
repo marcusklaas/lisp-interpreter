@@ -4,8 +4,6 @@ version = "0.1.0"
 authors = ["Marcus Klaas <mail@marcusklaas.nl>"]
 
 [dependencies]
-rustyline = "*"
-clippy = {version = "*", optional = true}
 
 [dependencies.string-interner]
 version = "*"
@@ -16,9 +14,6 @@ features = []
 default = []
 
 [lib]
-name = "yalp"
-
-[[bin]]
 name = "yalp"
 
 [profile.release]

@@ -1,0 +1,11 @@
+[package]
+name = "yalp-repl"
+version = "0.1.0"
+authors = ["Marcus Klaas de Vries <mail@marcusklaas.nl>"]
+
+[dependencies]
+rustyline = "*"
+clippy = {version = "*", optional = true}
+
+[dependencies.yalp]
+path = ".."

@@ -1,0 +1,21 @@
+[root]
+name = "yalp-wasm"
+version = "0.1.0"
+dependencies = [
+ "yalp 0.1.0",
+]
+
+[[package]]
+name = "string-interner"
+version = "0.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "yalp"
+version = "0.1.0"
+dependencies = [
+ "string-interner 0.6.3 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[metadata]
+"checksum string-interner 0.6.3 (registry+https://github.com/rust-lang/crates.io-index)" = "abb38a0d8fe673c40b10b6b75abcb076a958cc10fb894f14993d9737c4c87000"

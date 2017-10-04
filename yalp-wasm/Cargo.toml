@@ -1,0 +1,7 @@
+[package]
+name = "yalp-wasm"
+version = "0.1.0"
+authors = ["Marcus Klaas de Vries <mail@marcusklaas.nl>"]
+
+[dependencies.yalp]
+path = ".."

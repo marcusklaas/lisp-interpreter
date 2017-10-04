@@ -833,10 +833,15 @@ impl LispExpr {
                                 ctx.scope_level = ctx.scope_level.next();
                                 ctx.can_tail_call = true;
 
+                                let finalized_body = body.finalize(ctx)?;
+
+                                // TODO: here we can check whether this is not a tail call
+                                // but all arguments were moved!
+
                                 let result = FinalizedExpr::Lambda(
                                     num_args,
                                     orig_scope_level,
-                                    Box::new(body.finalize(ctx)?),
+                                    Box::new(finalized_body),
                                 );
 
                                 // Reset context to original state
@@ -1048,13 +1053,10 @@ fn inner_compile(
             let unpacked = *triple;
             let (test, true_expr, false_expr) = unpacked;
 
-            // FIXME: this is all a horrible mess. FIX ASAP
-            // Probably the only reasonable way to do this is by unreversing.
-            // Doing that at this point will be a pain in the neck, though.
-            let test_clone = test.clone();
-
+            // Test must be done before to ensure that the true/ false branches
+            // get the right var_stats.
             let mut test_expr_buf = Vec::new();
-            inner_compile(test, state, &mut test_expr_buf, var_stats)?;
+            inner_compile(test.clone(), state, &mut test_expr_buf, var_stats)?;
             let mut false_expr_var_stats = var_stats.clone();
 
             let before_len = instructions.len();
@@ -1073,7 +1075,7 @@ fn inner_compile(
                 }
             }
 
-            if let FinalizedExpr::FunctionCall(ref f_box, ref args, ..) = test_clone {
+            if let FinalizedExpr::FunctionCall(ref f_box, ref args, ..) = test {
                 if let FinalizedExpr::Value(
                     LispValue::Function(LispFunc::BuiltIn(BuiltIn::CheckZero)),
                 ) = **f_box
