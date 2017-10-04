@@ -1,3 +1,4 @@
+<!doctype html>
 <html>
     <head>
         <title>WASM lisp interpreter</title>
@@ -15,6 +16,7 @@
                 var free_state = Module.cwrap('free_state', 'void', ['number']);
                 var create_state = Module.cwrap('create_state', 'number', []);
                 var exec_command = Module.cwrap('exec_command', 'string', ['string', 'number']);
+                var defined_variables = Module.cwrap('defined_variables', 'string', ['number']);
 
                 var state = create_state();
 
@@ -24,12 +26,14 @@
                             this.echo(
                                 'This is a lisp repl written in Rust, compiled to WASM and now running inside a virtual machine in your browser. ' +
                                 'The built-in functions are add1, sub1, zero?, car, cdr, cons, null?, ' +
-                                'list, int?, bool?, list? and bool. Further, there are three macros: define, lambda and cond.' +
-                                '\nTry defining addition: (define + (lambda (x y) (cond (zero? y) x (+ (add1 x) (sub1 y)))))'
+                                'list, int?, bool?, list? and bool?. There are three macros: define, lambda and cond.' +
+                                '\nTry defining addition: (define + (lambda (x y) (cond (zero? y) x (+ (add1 x) (sub1 y)))))' +
+                                '\nType defined to see what has previously been defined.'
                             );
+                        } else if (command === "defined") {
+                            this.echo(defined_variables(state));
                         } else {
-                            let output = exec_command(command, state);
-                            this.echo(output);
+                            this.echo(exec_command(command, state));
                         }
                     }, {
                         greetings: 'WASM lisp interpreter. Type help for instructions',

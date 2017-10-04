@@ -166,6 +166,13 @@ impl State {
             }
         }
     }
+
+    pub fn get_variable_keys(&self) -> Vec<String> {
+        self.store
+            .keys()
+            .map(|&intern| self.resolve_intern(intern).into())
+            .collect()
+    }
 }
 
 /// A custom function is the product of a lambda call. It is basically just

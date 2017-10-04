@@ -10,7 +10,7 @@ use std::mem::{forget, transmute};
 use std::os::raw::c_char;
 use std::ffi::{CStr, CString};
 
-#[link_args = "-s EXPORTED_FUNCTIONS=['_exec_command','_create_state','_free_state']"]
+#[link_args = "-s EXPORTED_FUNCTIONS=['_exec_command','_create_state','_free_state','_defined_variables']"]
 extern "C" {}
 
 const PRELUDE: &'static [&'static str] = &[
@@ -76,6 +76,14 @@ pub extern "C" fn exec_command(command: *const c_char, state: *mut State) -> *mu
     let res = exec(rust_string, &mut *state);
     forget(state);
     CString::new(res).unwrap().into_raw()
+}
+
+#[no_mangle]
+pub extern "C" fn defined_variables(state_ptr: *mut State) -> *mut c_char {
+    let state: Box<State> = unsafe { transmute(state_ptr) };
+    let var_vec = state.get_variable_keys();
+    forget(state);
+    CString::new(var_vec.join(", ")).unwrap().into_raw()
 }
 
 fn main() {
