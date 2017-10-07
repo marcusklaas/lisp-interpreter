@@ -23,8 +23,9 @@ fn unitary_list<F: Fn(&mut Vec<LispValue>) -> EvaluationResult<LispValue>>(
 fn compile_top_expr(expr: TopExpr, state: &State) -> EvaluationResult<Vec<Instr>> {
     match expr {
         TopExpr::Define(name, sub_expr) => {
-            let finalized_definition =
-                sub_expr.finalize(&mut FinalizationContext::new(Some(name)))?;
+            let finalized_definition = sub_expr
+                .finalize(&mut FinalizationContext::new(Some(name)))?
+                .0;
 
             let mut instructions = vec![Instr::PopAndSet(name)];
             instructions.extend(compile_finalized_expr(finalized_definition, state)?);

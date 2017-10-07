@@ -401,8 +401,8 @@ enum TopExpr {
 enum FinalizedExpr {
     // Arg count, scope level, body
     Lambda(usize, Scope, Box<FinalizedExpr>),
-    // test expr, true branch, false branch
-    Cond(Box<(FinalizedExpr, FinalizedExpr, FinalizedExpr)>),
+    // test expr, true branch, false branch. Bool states whether the condition returns
+    Cond(Box<(FinalizedExpr, FinalizedExpr, FinalizedExpr)>, bool),
     Variable(InternedString),
     Value(LispValue),
     Argument(StackOffset, Scope, VariableConstraint),
@@ -436,15 +436,18 @@ impl FinalizedExpr {
                     self_call,
                 )
             }
-            FinalizedExpr::Cond(boks) => {
+            FinalizedExpr::Cond(boks, tail_call_status) => {
                 let triple = *boks;
                 let (test, true_expr, false_expr) = triple;
 
-                FinalizedExpr::Cond(Box::new((
-                    test.remove_subs_of(offset, scope),
-                    true_expr.remove_subs_of(offset, scope),
-                    false_expr.remove_subs_of(offset, scope),
-                )))
+                FinalizedExpr::Cond(
+                    Box::new((
+                        test.remove_subs_of(offset, scope),
+                        true_expr.remove_subs_of(offset, scope),
+                        false_expr.remove_subs_of(offset, scope),
+                    )),
+                    tail_call_status,
+                )
             }
             FinalizedExpr::Lambda(a, b, body) => {
                 FinalizedExpr::Lambda(a, b, Box::new(body.remove_subs_of(offset, scope)))
@@ -460,7 +463,7 @@ impl FinalizedExpr {
             FinalizedExpr::Argument(e_offset, e_scope, _move) => {
                 e_offset != offset || e_scope != scope || parent_sub
             }
-            FinalizedExpr::Cond(ref boks) => {
+            FinalizedExpr::Cond(ref boks, _tail_call_status) => {
                 let (ref test, ref true_expr, ref false_expr) = **boks;
                 test.only_use_after_sub(offset, scope, false)
                     && true_expr.only_use_after_sub(offset, scope, false)
@@ -500,13 +503,16 @@ impl FinalizedExpr {
                     is_self_call,
                 )
             }
-            FinalizedExpr::Cond(ref triple) => {
+            FinalizedExpr::Cond(ref triple, tail_call_status) => {
                 let (ref test, ref true_expr, ref false_expr) = **triple;
-                FinalizedExpr::Cond(Box::new((
-                    test.replace_args(scope_level, stack),
-                    true_expr.replace_args(scope_level, stack),
-                    false_expr.replace_args(scope_level, stack),
-                )))
+                FinalizedExpr::Cond(
+                    Box::new((
+                        test.replace_args(scope_level, stack),
+                        true_expr.replace_args(scope_level, stack),
+                        false_expr.replace_args(scope_level, stack),
+                    )),
+                    tail_call_status,
+                )
             }
             FinalizedExpr::Lambda(arg_c, scope, ref body) => FinalizedExpr::Lambda(
                 arg_c,
@@ -531,7 +537,7 @@ impl FinalizedExpr {
             ),
             FinalizedExpr::Value(ref v) => v.pretty_print(state, indent),
             FinalizedExpr::Variable(interned_name) => state.resolve_intern(interned_name).into(),
-            FinalizedExpr::Cond(ref triple) => {
+            FinalizedExpr::Cond(ref triple, _tail_call_status) => {
                 let (ref test, ref true_expr, ref false_expr) = **triple;
                 let expr_iter = Some(&*true_expr).into_iter().chain(Some(&*false_expr));
                 format_list(
@@ -565,6 +571,13 @@ impl FinalizedExpr {
             }
         }
     }
+}
+
+/// Used in finalization process
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+enum TailCallStatus {
+    CanTailCall,
+    CannotTailCall,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -677,7 +690,7 @@ pub enum LispExpr {
 struct FinalizationContext {
     scope_level: Scope,
     arguments: Vec<(InternedString, (Scope, StackOffset, VariableConstraint))>,
-    can_tail_call: bool,
+    tail_call_status: TailCallStatus,
     own_name: Option<InternedString>,
 }
 
@@ -686,7 +699,7 @@ impl FinalizationContext {
         FinalizationContext {
             scope_level: Scope::default(),
             arguments: Vec::new(),
-            can_tail_call: true,
+            tail_call_status: TailCallStatus::CanTailCall,
             own_name: own_name,
         }
     }
@@ -717,24 +730,26 @@ impl LispExpr {
             }
         } else {
             Ok(TopExpr::Regular(
-                self.finalize(&mut FinalizationContext::new(None))?,
+                self.finalize(&mut FinalizationContext::new(None))?.0,
             ))
         }
     }
 
-    fn finalize(self, ctx: &mut FinalizationContext) -> EvaluationResult<FinalizedExpr> {
+    /// Bool indicates whether the expression returns
+    /// Tail calls and recursions do not return, for example
+    fn finalize(self, ctx: &mut FinalizationContext) -> EvaluationResult<(FinalizedExpr, bool)> {
         // TODO: better name
         fn deal_with_opvar(
             expr: LispExpr,
             ctx: &mut FinalizationContext,
             caller: Option<BuiltIn>,
-        ) -> EvaluationResult<FinalizedExpr> {
+        ) -> EvaluationResult<(FinalizedExpr, bool)> {
             if let LispExpr::OpVar(n) = expr {
                 // So if we encounter a symbol, it could be two things:
                 // a function argument, in which case it should be in the arguments map
                 // a reference to something in our state.
                 // Function arguments take precendence.
-                Ok(
+                Ok((
                     ctx.arguments
                         .iter_mut()
                         .rev()
@@ -757,14 +772,15 @@ impl LispExpr {
                             )
                         })
                         .unwrap_or_else(|| FinalizedExpr::Variable(n)),
-                )
+                    true,
+                ))
             } else {
                 expr.finalize(ctx)
             }
         }
 
         Ok(match self {
-            LispExpr::Value(v) => FinalizedExpr::Value(v),
+            LispExpr::Value(v) => (FinalizedExpr::Value(v), true),
             LispExpr::OpVar(..) => return deal_with_opvar(self, ctx, None),
             LispExpr::Macro(..) => {
                 return Err(EvaluationError::UnexpectedOperator);
@@ -784,8 +800,9 @@ impl LispExpr {
                                 arguments: false_expr_args,
                                 ..*ctx
                             };
-                            let finalized_false_expr = false_expr.finalize(&mut false_expr_ctx)?;
-                            let finalized_true_expr = true_expr.finalize(ctx)?;
+                            let (finalized_false_expr, false_returns) =
+                                false_expr.finalize(&mut false_expr_ctx)?;
+                            let (finalized_true_expr, true_returns) = true_expr.finalize(ctx)?;
 
                             // Move analysis: a function argument is still moveable
                             // when it has been moved in neither the true branch or
@@ -798,13 +815,21 @@ impl LispExpr {
                                 *arg_true = arg_false.combine(*arg_true);
                             }
 
-                            ctx.can_tail_call = false;
+                            // The test expression cannot ever tail call!
+                            // TODO: add test for this!
+                            ctx.tail_call_status = TailCallStatus::CannotTailCall;
 
-                            FinalizedExpr::Cond(Box::new((
-                                test_expr.finalize(ctx)?,
-                                finalized_true_expr,
-                                finalized_false_expr,
-                            )))
+                            (
+                                FinalizedExpr::Cond(
+                                    Box::new((
+                                        test_expr.finalize(ctx)?.0,
+                                        finalized_true_expr,
+                                        finalized_false_expr,
+                                    )),
+                                    false_returns,
+                                ),
+                                false_returns || true_returns,
+                            )
                         })
                     }
                     LispExpr::Macro(LispMacro::Lambda) => {
@@ -836,11 +861,11 @@ impl LispExpr {
 
                                 // Update context for lambda
                                 let orig_scope_level = ctx.scope_level;
-                                let current_tail_status = ctx.can_tail_call;
+                                let current_tail_status = ctx.tail_call_status;
                                 ctx.scope_level = ctx.scope_level.next();
-                                ctx.can_tail_call = true;
+                                ctx.tail_call_status = TailCallStatus::CanTailCall;
 
-                                let finalized_body = body.finalize(ctx)?;
+                                let finalized_body = body.finalize(ctx)?.0;
 
                                 // TODO: here we can check whether this is not a tail call
                                 // but all arguments were moved!
@@ -853,10 +878,10 @@ impl LispExpr {
 
                                 // Reset context to original state
                                 ctx.scope_level = orig_scope_level;
-                                ctx.can_tail_call = current_tail_status;
+                                ctx.tail_call_status = current_tail_status;
                                 ctx.arguments.truncate(arguments_len);
 
-                                result
+                                (result, true)
                             } else {
                                 return Err(EvaluationError::ArgumentTypeMismatch);
                             }
@@ -875,8 +900,9 @@ impl LispExpr {
                         } else {
                             false
                         };
-                        let can_currently_tail_call = ctx.can_tail_call;
-                        ctx.can_tail_call = false;
+                        let is_tail_call = ctx.tail_call_status == TailCallStatus::CanTailCall;
+
+                        ctx.tail_call_status = TailCallStatus::CannotTailCall;
 
                         // We traverse the arguments from last to first to make sure
                         // we get the argument moves correctly. The last arguments
@@ -892,17 +918,20 @@ impl LispExpr {
                         };
 
                         for e in expr_iter.rev() {
-                            let arg = deal_with_opvar(e, ctx, caller)?;
+                            let arg = deal_with_opvar(e, ctx, caller)?.0;
                             arg_finalized_expr.push(arg);
                         }
                         arg_finalized_expr.reverse();
 
-                        let funk = head_expr.finalize(ctx)?;
-                        FinalizedExpr::FunctionCall(
-                            Box::new(funk),
-                            arg_finalized_expr,
-                            can_currently_tail_call,
-                            is_self_call,
+                        let funk = head_expr.finalize(ctx)?.0;
+                        (
+                            FinalizedExpr::FunctionCall(
+                                Box::new(funk),
+                                arg_finalized_expr,
+                                is_tail_call,
+                                is_self_call,
+                            ),
+                            !is_tail_call || caller.is_some(),
                         )
                     }
                 }
@@ -1056,7 +1085,7 @@ fn inner_compile(
                 state.resolve_intern(n).into(),
             ));
         },
-        FinalizedExpr::Cond(triple) => {
+        FinalizedExpr::Cond(triple, cond_returns) => {
             let unpacked = *triple;
             let (test, true_expr, false_expr) = unpacked;
 
@@ -1070,16 +1099,9 @@ fn inner_compile(
             inner_compile(true_expr, state, instructions, var_stats)?;
             let jump_size = instructions.len() - before_len;
             let before_len = instructions.len();
-            instructions.push(Instr::Jump(jump_size));
 
-            fn remove_jump_after_tail_call(instructions: &mut Vec<Instr>, jump_location: usize) {
-                let remove_jump = match instructions[jump_location + 1] {
-                    Instr::EvalFunction(_, Some(_)) | Instr::Recurse(..) => true,
-                    _ => false,
-                };
-                if remove_jump {
-                    instructions.remove(jump_location);
-                }
+            if cond_returns {
+                instructions.push(Instr::Jump(jump_size));
             }
 
             if let FinalizedExpr::FunctionCall(ref f_box, ref args, ..) = test {
@@ -1104,7 +1126,6 @@ fn inner_compile(
                                 instructions,
                                 &mut false_expr_var_stats,
                             )?;
-                            remove_jump_after_tail_call(instructions, before_len);
                             let jump_size = instructions.len() - before_len;
                             instructions.push(Instr::CondZeroJumpDecr(offset, jump_size));
 
@@ -1115,8 +1136,6 @@ fn inner_compile(
             }
 
             inner_compile(false_expr, state, instructions, &mut false_expr_var_stats)?;
-            remove_jump_after_tail_call(instructions, before_len);
-
             let jump_size = instructions.len() - before_len;
             instructions.push(Instr::CondJump(jump_size));
             instructions.extend(test_expr_buf.into_iter());
@@ -1320,7 +1339,7 @@ mod tests {
         let intern = state.intern(self_name);
         let expr = super::parse::parse_lisp_string(definition, &mut state).unwrap();
         let mut finalization_ctx = super::FinalizationContext::new(Some(intern));
-        let finalized_expr = expr.finalize(&mut finalization_ctx).unwrap();
+        let finalized_expr = expr.finalize(&mut finalization_ctx).unwrap().0;
 
         if let FinalizedExpr::Lambda(.., body) = finalized_expr {
             super::compile_finalized_expr(*body, &mut state).unwrap()
@@ -1403,6 +1422,18 @@ mod tests {
                 "(list ((f #t) 3) ((f (list)) #f))",
             ],
             "(3 #f)",
+        );
+    }
+
+    #[test]
+    fn cond_argument() {
+        check_lisp_ok(
+            vec![
+                "(define > (lambda (x y) (cond (zero? x) #f (cond (zero? y) #t (> (sub1 x) (sub1 y))))))",
+                "(define add (lambda (x y) (cond (zero? y) x (add (add1 x) (sub1 y)))))",
+                "(add (cond (> 12 5) 1 2) 3)",
+            ],
+            "4",
         );
     }
 
