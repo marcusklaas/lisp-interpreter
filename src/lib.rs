@@ -206,6 +206,7 @@ impl CustomFunc {
             } else {
                 let mut_borrowed = &mut *self.0.byte_code.get();
                 *mut_borrowed = compile_finalized_expr(self.0.body.clone(), state)?;
+                mut_borrowed.insert(0, Instr::Return);
                 Ok(&mut_borrowed[..])
             }
         }
@@ -594,6 +595,9 @@ enum Instr {
     /// Creates a custom function with given (scope level, argument count, function body) and pushes
     /// the result to the stack
     CreateLambda(Scope, usize, Box<FinalizedExpr>),
+    /// Pops the stack reference and removes everything from the stack pointer
+    /// upwards from the value stack except for the top value
+    Return,
 
     /// Skips the given number of instructions
     Jump(usize),
@@ -1100,6 +1104,8 @@ fn inner_compile(
             let jump_size = instructions.len() - before_len;
             let before_len = instructions.len();
 
+            // If the false branch never returns, because it is a tail call,
+            // we do not need to place a jump instruction
             if cond_returns {
                 instructions.push(Instr::Jump(jump_size));
             }
@@ -1269,6 +1275,7 @@ fn inner_compile(
 
 fn compile_finalized_expr(expr: FinalizedExpr, state: &State) -> EvaluationResult<Vec<Instr>> {
     let mut instructions = Vec::with_capacity(32);
+    //instructions.push(Instr::Return);
 
     inner_compile(expr, state, &mut instructions, &mut Vec::new())?;
 

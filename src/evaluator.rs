@@ -27,11 +27,17 @@ fn compile_top_expr(expr: TopExpr, state: &State) -> EvaluationResult<Vec<Instr>
                 .finalize(&mut FinalizationContext::new(Some(name)))?
                 .0;
 
-            let mut instructions = vec![Instr::PopAndSet(name)];
+            let mut instructions = vec![Instr::Return, Instr::PopAndSet(name)];
             instructions.extend(compile_finalized_expr(finalized_definition, state)?);
             Ok(instructions)
         }
-        TopExpr::Regular(sub_expr) => compile_finalized_expr(sub_expr, state),
+        TopExpr::Regular(sub_expr) => {
+            // TODO: do this better
+            let mut instructions = vec![Instr::Return];
+            instructions.extend(compile_finalized_expr(sub_expr, state)?);
+            Ok(instructions)
+            //compile_finalized_expr(sub_expr, state)
+        }
     }
 }
 
@@ -76,23 +82,21 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
     };
 
     'l: loop {
-        // Pop stack frame when there's no more instructions in this one
-        if frame.instr_pointer == 0 {
-            // Remove all values except for the last, which is the return value of
-            // called function
-            let top_index = StackOffset::from(value_stack.len() - 1);
-            remove_old_arguments(&mut value_stack, frame.stack_pointer, top_index);
-
-            if let Some(new_frame) = frame_stack.pop() {
-                frame = new_frame;
-            } else {
-                break 'l;
-            }
-        }
-
         frame.instr_pointer -= 1;
 
         match frame.instr_slice[frame.instr_pointer] {
+            Instr::Return => {
+                // Remove all values except for the last, which is the return value of
+                // called function
+                let top_index = StackOffset::from(value_stack.len() - 1);
+                remove_old_arguments(&mut value_stack, frame.stack_pointer, top_index);
+
+                if let Some(new_frame) = frame_stack.pop() {
+                    frame = new_frame;
+                } else {
+                    break 'l;
+                }
+            }
             Instr::VarAddOne(offset) => if let LispValue::Integer(ref mut i) =
                 *value_stack.get_mut(frame.stack_pointer + offset).unwrap()
             {
@@ -242,7 +246,7 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                             // This shouldn't occur too often, though.
                             let func = CustomFunc::from_byte_code(
                                 arg_count,
-                                vec![builtin_instr(b, arg_count)?],
+                                vec![Instr::Return, builtin_instr(b, arg_count)?],
                             );
 
                             (func, true)
