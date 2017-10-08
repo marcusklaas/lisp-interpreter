@@ -402,8 +402,15 @@ enum TopExpr {
 enum FinalizedExpr {
     // Arg count, scope level, body
     Lambda(usize, Scope, Box<FinalizedExpr>),
-    // test expr, true branch, false branch. Bool states whether the condition returns
-    Cond(Box<(FinalizedExpr, FinalizedExpr, FinalizedExpr)>, bool),
+    // test expr, true branch, false branch.
+    // false branch returns, true branch returns, tail call status of cond
+    // TODO: clean up this variant.
+    Cond(
+        Box<(FinalizedExpr, FinalizedExpr, FinalizedExpr)>,
+        bool,
+        bool,
+        TailCallStatus,
+    ),
     Variable(InternedString),
     Value(LispValue),
     Argument(StackOffset, Scope, VariableConstraint),
@@ -437,7 +444,7 @@ impl FinalizedExpr {
                     self_call,
                 )
             }
-            FinalizedExpr::Cond(boks, tail_call_status) => {
+            FinalizedExpr::Cond(boks, false_expr_returns, true_expr_returns, tail_call_status) => {
                 let triple = *boks;
                 let (test, true_expr, false_expr) = triple;
 
@@ -447,6 +454,8 @@ impl FinalizedExpr {
                         true_expr.remove_subs_of(offset, scope),
                         false_expr.remove_subs_of(offset, scope),
                     )),
+                    false_expr_returns,
+                    true_expr_returns,
                     tail_call_status,
                 )
             }
@@ -464,7 +473,7 @@ impl FinalizedExpr {
             FinalizedExpr::Argument(e_offset, e_scope, _move) => {
                 e_offset != offset || e_scope != scope || parent_sub
             }
-            FinalizedExpr::Cond(ref boks, _tail_call_status) => {
+            FinalizedExpr::Cond(ref boks, ..) => {
                 let (ref test, ref true_expr, ref false_expr) = **boks;
                 test.only_use_after_sub(offset, scope, false)
                     && true_expr.only_use_after_sub(offset, scope, false)
@@ -504,7 +513,12 @@ impl FinalizedExpr {
                     is_self_call,
                 )
             }
-            FinalizedExpr::Cond(ref triple, tail_call_status) => {
+            FinalizedExpr::Cond(
+                ref triple,
+                false_expr_returns,
+                true_expr_returns,
+                tail_call_status,
+            ) => {
                 let (ref test, ref true_expr, ref false_expr) = **triple;
                 FinalizedExpr::Cond(
                     Box::new((
@@ -512,6 +526,8 @@ impl FinalizedExpr {
                         true_expr.replace_args(scope_level, stack),
                         false_expr.replace_args(scope_level, stack),
                     )),
+                    false_expr_returns,
+                    true_expr_returns,
                     tail_call_status,
                 )
             }
@@ -538,7 +554,7 @@ impl FinalizedExpr {
             ),
             FinalizedExpr::Value(ref v) => v.pretty_print(state, indent),
             FinalizedExpr::Variable(interned_name) => state.resolve_intern(interned_name).into(),
-            FinalizedExpr::Cond(ref triple, _tail_call_status) => {
+            FinalizedExpr::Cond(ref triple, ..) => {
                 let (ref test, ref true_expr, ref false_expr) = **triple;
                 let expr_iter = Some(&*true_expr).into_iter().chain(Some(&*false_expr));
                 format_list(
@@ -799,6 +815,7 @@ impl LispExpr {
                 match head_expr {
                     LispExpr::Macro(LispMacro::Cond) => {
                         destructure!(expr_iter, [test_expr, true_expr, false_expr], {
+                            let could_tail_call = ctx.tail_call_status;
                             let false_expr_args = ctx.arguments.clone();
                             let mut false_expr_ctx = FinalizationContext {
                                 arguments: false_expr_args,
@@ -831,6 +848,8 @@ impl LispExpr {
                                         finalized_false_expr,
                                     )),
                                     false_returns,
+                                    true_returns,
+                                    could_tail_call,
                                 ),
                                 false_returns || true_returns,
                             )
@@ -1089,7 +1108,7 @@ fn inner_compile(
                 state.resolve_intern(n).into(),
             ));
         },
-        FinalizedExpr::Cond(triple, cond_returns) => {
+        FinalizedExpr::Cond(triple, false_expr_returns, true_expr_returns, tail_call_status) => {
             let unpacked = *triple;
             let (test, true_expr, false_expr) = unpacked;
 
@@ -1098,16 +1117,24 @@ fn inner_compile(
             let mut test_expr_buf = Vec::new();
             inner_compile(test.clone(), state, &mut test_expr_buf, var_stats)?;
             let mut false_expr_var_stats = var_stats.clone();
-
             let before_len = instructions.len();
+
+            if true_expr_returns && tail_call_status == TailCallStatus::CanTailCall {
+                instructions.push(Instr::Return);
+            }
+
             inner_compile(true_expr, state, instructions, var_stats)?;
             let jump_size = instructions.len() - before_len;
             let before_len = instructions.len();
 
             // If the false branch never returns, because it is a tail call,
             // we do not need to place a jump instruction
-            if cond_returns {
-                instructions.push(Instr::Jump(jump_size));
+            if false_expr_returns {
+                if tail_call_status == TailCallStatus::CanTailCall {
+                    instructions.push(Instr::Return);
+                } else {
+                    instructions.push(Instr::Jump(jump_size));
+                }
             }
 
             if let FinalizedExpr::FunctionCall(ref f_box, ref args, ..) = test {
