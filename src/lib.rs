@@ -851,7 +851,7 @@ impl LispExpr {
                                     true_returns,
                                     could_tail_call,
                                 ),
-                                false_returns || true_returns,
+                                could_tail_call == TailCallStatus::CannotTailCall,
                             )
                         })
                     }
@@ -1392,6 +1392,7 @@ mod tests {
         assert_eq!(
             bytecode,
             vec![
+                Instr::Return,
                 Instr::MoveArgument(From::from(0)),
                 Instr::Recurse(0),
                 Instr::VarAddOne(From::from(0)),
@@ -1410,8 +1411,9 @@ mod tests {
         assert_eq!(
             bytecode,
             vec![
+                Instr::Return,
                 Instr::MoveArgument(From::from(1)),
-                Instr::Jump(1),
+                Instr::Return,
                 Instr::Cons,
                 Instr::EvalFunction(2, None),
                 // 1337 is the magic number representing the function itself
@@ -1436,8 +1438,9 @@ mod tests {
         assert_eq!(
             bytecode,
             vec![
+                Instr::Return,
                 Instr::PushValue(LispValue::Boolean(false)),
-                Instr::Jump(1),
+                Instr::Return,
                 Instr::PushValue(LispValue::Boolean(true)),
                 Instr::Recurse(0),
                 Instr::CondZeroJumpDecr(From::from(1), 1),
@@ -1834,13 +1837,19 @@ mod tests {
 
     #[test]
     fn zero_arg_function_call() {
-        check_lisp_err(
+        let mut state = State::default();
+
+        if let LispValue::Function(..) = check_lisp(
+            &mut state,
             vec![
                 "(define add (lambda (x y) (cond (zero? y) x (add (add1 x) (sub1 y)))))",
                 "(add)",
             ],
-            LispError::Evaluation(EvaluationError::ArgumentCountMismatch),
-        );
+        ).unwrap()
+        {
+        } else {
+            panic!("Expected function!");
+        }
     }
 
     #[bench]
