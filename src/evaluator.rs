@@ -254,8 +254,8 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                         LispFunc::Custom(f) => {
                             let func_arg_count = f.0.arg_count;
 
-                            // Too many arguments or none at all.
-                            if func_arg_count < arg_count || arg_count == 0 {
+                            // Too many arguments.
+                            if func_arg_count < arg_count {
                                 return Err(EvaluationError::ArgumentCountMismatch);
                             }
                             // Not enough arguments, let's create a lambda that takes
