@@ -374,7 +374,6 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
     }
 
     assert!(frame_stack.is_empty());
-    assert_eq!(frame.instr_pointer, 0);
     assert_eq!(value_stack.len(), 1);
     Ok(value_stack.pop().unwrap())
 }
