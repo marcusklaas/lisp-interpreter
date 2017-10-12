@@ -20,27 +20,6 @@ fn unitary_list<F: Fn(&mut Vec<LispValue>) -> EvaluationResult<LispValue>>(
     Ok(())
 }
 
-fn compile_top_expr(expr: TopExpr, state: &State) -> EvaluationResult<Vec<Instr>> {
-    match expr {
-        TopExpr::Define(name, sub_expr) => {
-            let finalized_definition = sub_expr
-                .finalize(&mut FinalizationContext::new(Some(name)))?
-                .0;
-
-            let mut instructions = vec![Instr::Return, Instr::PopAndSet(name)];
-            instructions.extend(compile_finalized_expr(finalized_definition, state)?);
-            Ok(instructions)
-        }
-        TopExpr::Regular(sub_expr) => {
-            // TODO: do this better
-            let mut instructions = vec![Instr::Return];
-            instructions.extend(compile_finalized_expr(sub_expr, state)?);
-            Ok(instructions)
-            //compile_finalized_expr(sub_expr, state)
-        }
-    }
-}
-
 fn remove_old_arguments(stack: &mut Vec<LispValue>, start: StackOffset, end: StackOffset) {
     stack.splice(From::from(start)..From::from(end), iter::empty());
 }
@@ -72,14 +51,39 @@ impl StackRef {
 }
 
 pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
+    let (instructions, is_define) = match expr.into_top_expr()? {
+        TopExpr::Define(name, sub_expr) => {
+            let finalized_definition =
+                sub_expr.finalize(&mut FinalizationContext::new(Some(name)))?;
+
+            (
+                compile_finalized_expr(finalized_definition.0, true, state)?,
+                Some(name),
+            )
+        }
+        TopExpr::Regular(sub_expr, _returns) => {
+            (compile_finalized_expr(sub_expr, true, state)?, None)
+        }
+    };
+
+    let result = run(instructions, state)?;
+
+    if let Some(var_name) = is_define {
+        state.set_variable(var_name, result, false)?;
+        Ok(LispValue::List(Vec::new()))
+    } else {
+        Ok(result)
+    }
+}
+
+fn run(instructions: Vec<Instr>, state: &State) -> EvaluationResult<LispValue> {
     let mut value_stack: Vec<LispValue> = Vec::new();
     let mut frame_stack = vec![];
-    let mut frame = {
-        let top_expr = expr.into_top_expr()?;
-        let instructions = compile_top_expr(top_expr, state)?;
-        let main_func = CustomFunc::from_byte_code(0, instructions);
-        StackRef::new(main_func, StackOffset::default(), state)?
-    };
+    let mut frame = StackRef::new(
+        CustomFunc::from_byte_code(0, instructions),
+        StackOffset::default(),
+        state,
+    )?;
 
     'l: loop {
         frame.instr_pointer -= 1;
@@ -195,14 +199,14 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                 }
                 frame.instr_pointer = frame.instr_slice.len();
             }
-            Instr::CreateLambda(scope, arg_count, ref body) => {
+            Instr::CreateLambda(scope, arg_count, ref body, returns) => {
                 // If there are any references to function arguments in
                 // the lambda body, we should resolve them before
                 // creating the lambda.
                 // This enables us to do closures.
                 let walked_body =
                     body.replace_args(scope, &mut value_stack[From::from(frame.stack_pointer)..]);
-                let f = LispFunc::new_custom(arg_count, walked_body);
+                let f = LispFunc::new_custom(arg_count, walked_body, returns);
 
                 value_stack.push(LispValue::Function(f));
             }
@@ -231,10 +235,6 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                 );
                 value_stack.push(val);
             }
-            Instr::PopAndSet(var_name) => {
-                state.set_variable(var_name, value_stack.pop().unwrap(), false)?;
-                value_stack.push(LispValue::List(Vec::new()));
-            }
             // Pops a function off the value stack and applies it to the values
             // at the top of the value stack
             Instr::EvalFunction(arg_count, tail_call_args) => {
@@ -254,9 +254,32 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                         LispFunc::Custom(f) => {
                             let func_arg_count = f.0.arg_count;
 
-                            // Too many arguments.
-                            if func_arg_count < arg_count {
-                                return Err(EvaluationError::ArgumentCountMismatch);
+                            // Exactly right number of arguments. Let's evaluate.
+                            if func_arg_count == arg_count {
+                                if let Some(arg_reuse_count) = tail_call_args {
+                                    if arg_reuse_count != func_arg_count {
+                                        // Remove old arguments of the stack.
+                                        let top_index = StackOffset::from(
+                                            value_stack.len() - func_arg_count + arg_reuse_count,
+                                        );
+                                        let bottom_index = frame.stack_pointer +
+                                            StackOffset::from(arg_reuse_count);
+                                        remove_old_arguments(
+                                            &mut value_stack,
+                                            bottom_index,
+                                            top_index,
+                                        );
+                                    }
+
+                                    (f, false)
+                                } else {
+                                    // No need to add this frame to the frame stack when
+                                    // we're just immediately going to return next
+                                    (
+                                        f,
+                                        frame.instr_slice[frame.instr_pointer - 1] != Instr::Return,
+                                    )
+                                }
                             }
                             // Not enough arguments, let's create a lambda that takes
                             // the remainder.
@@ -272,21 +295,9 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
                                 value_stack.push(LispValue::Function(continuation));
                                 continue;
                             }
-                            // Exactly right number of arguments. Let's evaluate.
-                            else if let Some(arg_reuse_count) = tail_call_args {
-                                if arg_reuse_count != func_arg_count {
-                                    // Remove old arguments of the stack.
-                                    let top_index = StackOffset::from(
-                                        value_stack.len() - func_arg_count + arg_reuse_count,
-                                    );
-                                    let bottom_index =
-                                        frame.stack_pointer + StackOffset::from(arg_reuse_count);
-                                    remove_old_arguments(&mut value_stack, bottom_index, top_index);
-                                }
-
-                                (f, false)
-                            } else {
-                                (f, true)
+                            // Too many arguments.
+                            else {
+                                return Err(EvaluationError::ArgumentCountMismatch);
                             }
                         }
                     };
@@ -298,7 +309,7 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
 
                     // If the called function is not a tail call and there are instructions
                     // left in the calling function, push the old stack frame to the stack.
-                    if push_stack && frame.instr_pointer != 0 {
+                    if push_stack {
                         frame_stack.push(replace(&mut frame, next_frame));
                     } else {
                         frame = next_frame;

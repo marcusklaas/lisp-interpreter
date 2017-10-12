@@ -115,6 +115,7 @@ type EvaluationResult<T> = Result<T, EvaluationError>;
 struct InnerCustomFunc {
     arg_count: usize,
     body: FinalizedExpr,
+    returns: bool,
     byte_code: UnsafeCell<Vec<Instr>>,
 }
 
@@ -205,7 +206,7 @@ impl CustomFunc {
                 Ok(&borrowed[..])
             } else {
                 let mut_borrowed = &mut *self.0.byte_code.get();
-                *mut_borrowed = compile_finalized_expr(self.0.body.clone(), state)?;
+                *mut_borrowed = compile_finalized_expr(self.0.body.clone(), self.0.returns, state)?;
                 mut_borrowed.insert(0, Instr::Return);
                 Ok(&mut_borrowed[..])
             }
@@ -217,6 +218,7 @@ impl CustomFunc {
             arg_count: arg_count,
             // dummy value
             body: FinalizedExpr::Value(LispValue::Boolean(false)),
+            returns: true,
             byte_code: UnsafeCell::new(bytecode),
         }))
     }
@@ -328,10 +330,11 @@ pub enum LispFunc {
 }
 
 impl LispFunc {
-    fn new_custom(arg_count: usize, body: FinalizedExpr) -> LispFunc {
+    fn new_custom(arg_count: usize, body: FinalizedExpr, returns: bool) -> LispFunc {
         LispFunc::Custom(CustomFunc(Rc::new(InnerCustomFunc {
-            arg_count: arg_count,
-            body: body,
+            arg_count,
+            body,
+            returns,
             byte_code: UnsafeCell::new(Vec::new()),
         })))
     }
@@ -355,6 +358,7 @@ impl LispFunc {
         Self::new_custom(
             arg_count,
             FinalizedExpr::FunctionCall(funk, arg_vec, true, false),
+            false,
         )
     }
 
@@ -394,14 +398,15 @@ impl LispMacro {
 #[derive(Debug, Clone)]
 enum TopExpr {
     Define(InternedString, LispExpr),
-    Regular(FinalizedExpr),
+    /// Bool states whether or not the expression always returns
+    Regular(FinalizedExpr, bool),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 /// TODO: explain how `FinalizedExpression` is different from `LispExpr`
 enum FinalizedExpr {
-    // Arg count, scope level, body
-    Lambda(usize, Scope, Box<FinalizedExpr>),
+    // Arg count, scope level, body, returns
+    Lambda(usize, Scope, Box<FinalizedExpr>, bool),
     // test expr, true branch, false branch.
     // false branch returns, true branch returns, tail call status of cond
     // TODO: clean up this variant.
@@ -459,8 +464,8 @@ impl FinalizedExpr {
                     tail_call_status,
                 )
             }
-            FinalizedExpr::Lambda(a, b, body) => {
-                FinalizedExpr::Lambda(a, b, Box::new(body.remove_subs_of(offset, scope)))
+            FinalizedExpr::Lambda(a, b, body, returns) => {
+                FinalizedExpr::Lambda(a, b, Box::new(body.remove_subs_of(offset, scope)), returns)
             }
             x => x,
         }
@@ -475,19 +480,21 @@ impl FinalizedExpr {
             }
             FinalizedExpr::Cond(ref boks, ..) => {
                 let (ref test, ref true_expr, ref false_expr) = **boks;
-                test.only_use_after_sub(offset, scope, false)
-                    && true_expr.only_use_after_sub(offset, scope, false)
-                    && false_expr.only_use_after_sub(offset, scope, false)
+                test.only_use_after_sub(offset, scope, false) &&
+                    true_expr.only_use_after_sub(offset, scope, false) &&
+                    false_expr.only_use_after_sub(offset, scope, false)
             }
             FinalizedExpr::Variable(..) | FinalizedExpr::Value(..) => true,
-            FinalizedExpr::Lambda(_, _, ref body) => body.only_use_after_sub(offset, scope, false),
+            FinalizedExpr::Lambda(_, _, ref body, _) => {
+                body.only_use_after_sub(offset, scope, false)
+            }
             FinalizedExpr::FunctionCall(ref f, ref args, _, _) => {
                 let is_sub = FinalizedExpr::Value(
                     LispValue::Function(LispFunc::BuiltIn(BuiltIn::SubOne)),
                 ) == **f;
 
-                f.only_use_after_sub(offset, scope, is_sub)
-                    && args.iter()
+                f.only_use_after_sub(offset, scope, is_sub) &&
+                    args.iter()
                         .all(|a| a.only_use_after_sub(offset, scope, is_sub))
             }
         }
@@ -531,10 +538,11 @@ impl FinalizedExpr {
                     tail_call_status,
                 )
             }
-            FinalizedExpr::Lambda(arg_c, scope, ref body) => FinalizedExpr::Lambda(
+            FinalizedExpr::Lambda(arg_c, scope, ref body, returns) => FinalizedExpr::Lambda(
                 arg_c,
                 scope,
                 Box::new(body.replace_args(scope_level, stack)),
+                returns,
             ),
             ref x => x.clone(),
         }
@@ -565,7 +573,7 @@ impl FinalizedExpr {
                     expr_iter,
                 )
             }
-            FinalizedExpr::Lambda(arg_c, scope, ref body) => format!(
+            FinalizedExpr::Lambda(arg_c, scope, ref body, _) => format!(
                 "lambda ({}, {}) -> {}",
                 arg_c,
                 scope,
@@ -606,11 +614,9 @@ enum Instr {
     /// The second parameter indicates whether this is a tail call, and if so, whether
     /// we can skip reuse the arguments
     EvalFunction(usize, Option<usize>),
-    /// Pops a value from the stack and adds it to the state at the given name
-    PopAndSet(InternedString),
-    /// Creates a custom function with given (scope level, argument count, function body) and pushes
-    /// the result to the stack
-    CreateLambda(Scope, usize, Box<FinalizedExpr>),
+    /// Creates a custom function with given (scope level, argument count, function body, returns)
+    /// and pushes the result to the stack
+    CreateLambda(Scope, usize, Box<FinalizedExpr>, bool),
     /// Pops the stack reference and removes everything from the stack pointer
     /// upwards from the value stack except for the top value
     Return,
@@ -749,9 +755,8 @@ impl LispExpr {
                 _ => unreachable!(),
             }
         } else {
-            Ok(TopExpr::Regular(
-                self.finalize(&mut FinalizationContext::new(None))?.0,
-            ))
+            let finalized = self.finalize(&mut FinalizationContext::new(None))?;
+            Ok(TopExpr::Regular(finalized.0, finalized.1))
         }
     }
 
@@ -888,7 +893,7 @@ impl LispExpr {
                                 ctx.scope_level = ctx.scope_level.next();
                                 ctx.tail_call_status = TailCallStatus::CanTailCall;
 
-                                let finalized_body = body.finalize(ctx)?.0;
+                                let (finalized_body, returns) = body.finalize(ctx)?;
 
                                 // TODO: here we can check whether this is not a tail call
                                 // but all arguments were moved!
@@ -897,6 +902,7 @@ impl LispExpr {
                                     num_args,
                                     orig_scope_level,
                                     Box::new(finalized_body),
+                                    returns,
                                 );
 
                                 // Reset context to original state
@@ -1173,8 +1179,8 @@ fn inner_compile(
             instructions.push(Instr::CondJump(jump_size));
             instructions.extend(test_expr_buf.into_iter());
         }
-        FinalizedExpr::Lambda(arg_count, scope, body) => {
-            instructions.push(Instr::CreateLambda(scope, arg_count, body));
+        FinalizedExpr::Lambda(arg_count, scope, body, returns) => {
+            instructions.push(Instr::CreateLambda(scope, arg_count, body, returns));
         }
         FinalizedExpr::FunctionCall(funk, args, is_tail_call, is_self_call) => {
             // Here we check for special patterns of builtin functions on single
@@ -1300,9 +1306,16 @@ fn inner_compile(
     Ok(())
 }
 
-fn compile_finalized_expr(expr: FinalizedExpr, state: &State) -> EvaluationResult<Vec<Instr>> {
+fn compile_finalized_expr(
+    expr: FinalizedExpr,
+    expr_returns: bool,
+    state: &State,
+) -> EvaluationResult<Vec<Instr>> {
     let mut instructions = Vec::with_capacity(32);
-    //instructions.push(Instr::Return);
+
+    if expr_returns {
+        instructions.push(Instr::Return);
+    }
 
     inner_compile(expr, state, &mut instructions, &mut Vec::new())?;
 
@@ -1373,12 +1386,12 @@ mod tests {
         let intern = state.intern(self_name);
         let expr = super::parse::parse_lisp_string(definition, &mut state).unwrap();
         let mut finalization_ctx = super::FinalizationContext::new(Some(intern));
-        let finalized_expr = expr.finalize(&mut finalization_ctx).unwrap().0;
+        let (finalized_expr, returns) = expr.finalize(&mut finalization_ctx).unwrap();
 
-        if let FinalizedExpr::Lambda(.., body) = finalized_expr {
-            super::compile_finalized_expr(*body, &mut state).unwrap()
+        if let FinalizedExpr::Lambda(.., body, returns) = finalized_expr {
+            super::compile_finalized_expr(*body, returns, &mut state).unwrap()
         } else {
-            super::compile_finalized_expr(finalized_expr, &mut state).unwrap()
+            super::compile_finalized_expr(finalized_expr, returns, &mut state).unwrap()
         }
     }
 
