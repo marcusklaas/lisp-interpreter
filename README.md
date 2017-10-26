@@ -1,5 +1,5 @@
 # lisp-interpreter 
-A bare bones lisp parser &amp; interpreter.
+A bare bones lisp parser &amp; interpreter. A demo of the interpreter compiled to WASM can be found at [marcusklaas.nl/lisp](https://marcusklaas.nl/lisp/).
 
 [![Build Status](https://travis-ci.org/marcusklaas/lisp-interpreter.svg?branch=master2)](https://travis-ci.org/marcusklaas/lisp-interpreter)
 
@@ -65,6 +65,7 @@ $ cargo build --release
 ```
 To start the command-line REPL, run
 ```bash
+$ cd yalp-repl
 $ cargo run --release
 ```
 Execute the test suite using
@@ -79,7 +80,7 @@ This interpreter does not use a garbage colllector to keep the design simple. Fu
 
 Because the set of buitl-in functions is so sparse, writing performant code for this interpreter is generally not possible. However, it does perform elementary operations relatively quickly. For example, the prelude function `add`, which recursively adds 1 to the first argument and subtracts 1 from the second until the second argument is zero is about twice as fast as the following loop in PHP 7.1.8:
 ```php
-function add($a, $b) {
+function add(int $a, int $b): int {
     while($b > 0) {
         $a += 1;
         $b -= 1;
