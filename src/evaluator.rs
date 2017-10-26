@@ -262,8 +262,8 @@ fn run(instructions: Vec<Instr>, state: &State) -> EvaluationResult<LispValue> {
                                         let top_index = StackOffset::from(
                                             value_stack.len() - func_arg_count + arg_reuse_count,
                                         );
-                                        let bottom_index = frame.stack_pointer +
-                                            StackOffset::from(arg_reuse_count);
+                                        let bottom_index = frame.stack_pointer
+                                            + StackOffset::from(arg_reuse_count);
                                         remove_old_arguments(
                                             &mut value_stack,
                                             bottom_index,
