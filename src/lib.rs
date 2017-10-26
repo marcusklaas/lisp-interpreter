@@ -480,9 +480,9 @@ impl FinalizedExpr {
             }
             FinalizedExpr::Cond(ref boks, ..) => {
                 let (ref test, ref true_expr, ref false_expr) = **boks;
-                test.only_use_after_sub(offset, scope, false) &&
-                    true_expr.only_use_after_sub(offset, scope, false) &&
-                    false_expr.only_use_after_sub(offset, scope, false)
+                test.only_use_after_sub(offset, scope, false)
+                    && true_expr.only_use_after_sub(offset, scope, false)
+                    && false_expr.only_use_after_sub(offset, scope, false)
             }
             FinalizedExpr::Variable(..) | FinalizedExpr::Value(..) => true,
             FinalizedExpr::Lambda(_, _, ref body, _) => {
@@ -493,8 +493,8 @@ impl FinalizedExpr {
                     LispValue::Function(LispFunc::BuiltIn(BuiltIn::SubOne)),
                 ) == **f;
 
-                f.only_use_after_sub(offset, scope, is_sub) &&
-                    args.iter()
+                f.only_use_after_sub(offset, scope, is_sub)
+                    && args.iter()
                         .all(|a| a.only_use_after_sub(offset, scope, is_sub))
             }
         }

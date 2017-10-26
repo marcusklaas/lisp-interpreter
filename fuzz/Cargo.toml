@@ -1,0 +1,9 @@
+[package]
+name = "fuzz"
+version = "0.1.0"
+authors = ["Marcus Klaas <mail@marcusklaas.nl>"]
+
+[dependencies]
+
+[dependencies.yalp]
+path = ".."

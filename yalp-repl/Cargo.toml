@@ -9,3 +9,5 @@ clippy = {version = "*", optional = true}
 
 [dependencies.yalp]
 path = ".."
+
+
