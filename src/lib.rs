@@ -9,11 +9,11 @@ extern crate test;
 
 pub mod parse;
 pub mod evaluator;
+pub mod print;
 
 use std::mem::{replace, transmute_copy};
 use std::convert::From;
 use std::fmt;
-use std::iter::repeat;
 use std::rc::Rc;
 use std::cell::UnsafeCell;
 use std::collections::hash_map;
@@ -222,20 +222,6 @@ impl CustomFunc {
             byte_code: UnsafeCell::new(bytecode),
         }))
     }
-
-    pub fn pretty_print(&self, state: &State, indent: usize) -> String {
-        let mut result = String::new();
-
-        for i in 0..self.0.arg_count {
-            if i > 0 {
-                result.push(' ');
-            }
-            result.push_str(&format!("${}", i));
-        }
-
-        result.push_str(&format!(" ->\n{}", indent_to_string(indent + 1)));
-        result + &self.0.body.pretty_print(state, indent + 1)
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -361,17 +347,6 @@ impl LispFunc {
             false,
         )
     }
-
-    pub fn pretty_print(&self, state: &State, indent: usize) -> String {
-        match *self {
-            LispFunc::BuiltIn(name) => format!("{:?}", name),
-            LispFunc::Custom(ref c) => c.pretty_print(state, indent),
-        }
-    }
-}
-
-fn indent_to_string(indent: usize) -> String {
-    repeat(' ').take(indent * 4).collect()
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -547,55 +522,6 @@ impl FinalizedExpr {
             ref x => x.clone(),
         }
     }
-
-    pub fn pretty_print(&self, state: &State, indent: usize) -> String {
-        match *self {
-            FinalizedExpr::Argument(offset, scope, move_status) => format!(
-                "{}$({:?}, {})",
-                if move_status == VariableConstraint::Unconstrained {
-                    "m"
-                } else {
-                    ""
-                },
-                offset,
-                scope
-            ),
-            FinalizedExpr::Value(ref v) => v.pretty_print(state, indent),
-            FinalizedExpr::Variable(interned_name) => state.resolve_intern(interned_name).into(),
-            FinalizedExpr::Cond(ref triple, ..) => {
-                let (ref test, ref true_expr, ref false_expr) = **triple;
-                let expr_iter = Some(&*true_expr).into_iter().chain(Some(&*false_expr));
-                format_list(
-                    state,
-                    indent,
-                    "cond".to_owned(),
-                    &test.pretty_print(state, indent),
-                    expr_iter,
-                )
-            }
-            FinalizedExpr::Lambda(arg_c, scope, ref body, _) => format!(
-                "lambda ({}, {}) -> {}",
-                arg_c,
-                scope,
-                body.pretty_print(state, indent)
-            ),
-            FinalizedExpr::FunctionCall(ref funk, ref args, is_tail_call, is_self_call) => {
-                let prefix = match (is_self_call, is_tail_call) {
-                    (true, true) => "r".to_owned(),
-                    (false, true) => "t".to_owned(),
-                    (_, _) => String::new(),
-                };
-
-                format_list(
-                    state,
-                    indent,
-                    prefix,
-                    &funk.pretty_print(state, indent),
-                    args.iter(),
-                )
-            }
-        }
-    }
 }
 
 /// Used in finalization process
@@ -666,28 +592,6 @@ enum Instr {
     /// given offset is zero. Jumps if it is, decrements it otherwise.
     /// Params mean (variable_offset, jump_size)
     CondZeroJumpDecr(StackOffset, usize),
-}
-
-fn format_list<'a, I: Iterator<Item = &'a FinalizedExpr>>(
-    state: &State,
-    indent: usize,
-    prefix: String,
-    first_item: &str,
-    expr_list: I,
-) -> String {
-    let mut result = prefix;
-
-    result.push('{');
-    result.push_str(first_item);
-
-    for expr in expr_list {
-        result.push('\n');
-        result.push_str(&indent_to_string(indent));
-        result.push_str(&expr.pretty_print(state, indent));
-    }
-
-    result.push('}');
-    result
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone, PartialOrd, Ord, Hash)]
@@ -967,31 +871,6 @@ impl LispExpr {
             }
         })
     }
-
-    pub fn pretty_print(&self, state: &State, indent: usize) -> String {
-        match *self {
-            LispExpr::Value(ref v) => v.pretty_print(state, indent),
-            LispExpr::OpVar(intern) => state.resolve_intern(intern).into(),
-            LispExpr::Macro(ref mac) => format!("{:?}", mac),
-            LispExpr::Call(ref expr_vec) => {
-                let mut result = String::new();
-
-                result.push('{');
-
-                for (idx, expr) in expr_vec.iter().enumerate() {
-                    if idx > 0 {
-                        result.push('\n');
-                        result.push_str(&indent_to_string(indent));
-                    }
-
-                    result.push_str(&expr.pretty_print(state, indent));
-                }
-
-                result.push('}');
-                result
-            }
-        }
-    }
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -1041,29 +920,6 @@ impl LispValue {
             LispValue::Integer(..) => ArgType::Integer,
             LispValue::Function(..) => ArgType::Function,
             LispValue::List(..) => ArgType::List,
-        }
-    }
-
-    pub fn pretty_print(&self, state: &State, indent: usize) -> String {
-        match *self {
-            LispValue::Function(ref func) => format!("[{}]", func.pretty_print(state, indent)),
-            LispValue::Integer(i) => i.to_string(),
-            LispValue::Boolean(true) => "#t".into(),
-            LispValue::Boolean(false) => "#f".into(),
-            LispValue::List(ref vec) => {
-                let mut result = "(".to_string();
-
-                for (idx, val) in vec.iter().enumerate() {
-                    if idx > 0 {
-                        result.push(' ');
-                    }
-
-                    result.push_str(&val.pretty_print(state, indent));
-                }
-
-                result.push(')');
-                result
-            }
         }
     }
 }
@@ -1366,7 +1222,7 @@ mod tests {
     {
         let mut state = State::default();
         let val = check_lisp(&mut state, commands).unwrap();
-        assert_eq!(expected_out, val.pretty_print(&state, 0));
+        assert_eq!(expected_out, print::print_value(&val, &state, 0));
     }
 
     fn check_lisp_err<'i, I>(commands: I, expected_err: LispError)
@@ -1513,14 +1369,14 @@ mod tests {
     fn display_int_val() {
         let state = Default::default();
         let val = LispValue::Integer(5);
-        assert_eq!("5", val.pretty_print(&state, 0));
+        assert_eq!("5", print::print_value(&val, &state, 0));
     }
 
     #[test]
     fn display_list_val() {
         let state = Default::default();
         let val = LispValue::List(vec![LispValue::Integer(1), LispValue::List(vec![])]);
-        assert_eq!("(1 ())", val.pretty_print(&state, 0));
+        assert_eq!("(1 ())", print::print_value(&val, &state, 0));
     }
 
     #[test]
