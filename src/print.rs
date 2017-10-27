@@ -79,23 +79,18 @@ fn print_lisp_func(f: &LispFunc, state: &State, indent: usize) -> String {
 
 fn print_finalized_expr(expr: &FinalizedExpr, state: &State, indent: usize) -> String {
     match *expr {
-        FinalizedExpr::Argument(offset, scope, _move_status) => format!(
-            "$[{}:{}]",
-            scope,
-            usize::from(offset)
-        ),
+        FinalizedExpr::Argument(offset, scope, _move_status) => {
+            format!("$[{}:{}]", scope, usize::from(offset))
+        }
         FinalizedExpr::Value(ref v) => print_value(v, state, indent),
         FinalizedExpr::Variable(interned_name) => state.resolve_intern(interned_name).into(),
         FinalizedExpr::Cond(ref triple, ..) => {
             let (ref test_expr, ref true_expr, ref false_expr) = **triple;
             // FIXME: this is just too messy - how to better do this?
-            let expr_iter = Some(&*test_expr).into_iter().chain(Some(&*true_expr).into_iter().chain(Some(&*false_expr)));
-            format_list(
-                state,
-                indent,
-                "cond",
-                expr_iter,
-            )
+            let expr_iter = Some(&*test_expr)
+                .into_iter()
+                .chain(Some(&*true_expr).into_iter().chain(Some(&*false_expr)));
+            format_list(state, indent, "cond", expr_iter)
         }
         FinalizedExpr::Lambda(arg_c, scope, ref body, _) => format!(
             "lambda ({}, {}) -> {}",

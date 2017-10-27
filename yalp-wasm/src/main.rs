@@ -40,7 +40,7 @@ fn exec(s: &str, state: &mut State) -> String {
     match parse_result {
         Ok(expr) => match yalp::evaluator::eval(expr, state) {
             Ok(val) => {
-                let res = val.pretty_print(state, 0);
+                let res = yalp::print::print_value(&val, state, 0);
                 state.set_variable(last_intern, val, true).unwrap();
                 res
             }
