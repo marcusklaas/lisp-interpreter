@@ -1,6 +1,6 @@
 use std::iter::repeat;
 
-use super::{CustomFunc, FinalizedExpr, LispFunc, LispValue, State};
+use super::{CustomFunc, FinalizedExpr, LispFunc, LispValue, State, Scope};
 
 pub fn print_value(val: &LispValue, state: &State, indent: usize) -> String {
     match *val {
@@ -57,17 +57,21 @@ fn format_list<'a, I: Iterator<Item = &'a FinalizedExpr>>(
 }
 
 fn print_custom_func(f: &CustomFunc, state: &State, indent: usize) -> String {
+    print_lambda(f.0.arg_count, Scope(0), &f.0.body, state, indent)
+}
+
+fn print_lambda(arg_count: usize, scope: Scope, body: &FinalizedExpr, state: &State, indent: usize) -> String {
     let mut result = "(".to_owned();
 
-    for i in 0..(f.0.arg_count) {
+    for i in 0..arg_count {
         if i > 0 {
             result.push(' ');
         }
-        result.push_str(&format!("${}", i));
+        result.push_str(&format!("$[{}:{}]", scope.0, i));
     }
 
     result.push_str(&" -> ");
-    result + &print_finalized_expr(&f.0.body, state, indent) + ")"
+    result + &print_finalized_expr(body, state, indent) + ")"
 }
 
 fn print_lisp_func(f: &LispFunc, state: &State, indent: usize) -> String {
@@ -92,11 +96,10 @@ fn print_finalized_expr(expr: &FinalizedExpr, state: &State, indent: usize) -> S
                 .chain(Some(&*true_expr).into_iter().chain(Some(&*false_expr)));
             format_list(state, indent, "cond", expr_iter)
         }
-        FinalizedExpr::Lambda(arg_c, scope, ref body, _) => format!(
-            "lambda ({}, {}) -> {}",
+        FinalizedExpr::Lambda(arg_c, scope, ref body, _) => print_lambda(
             arg_c,
             scope,
-            print_finalized_expr(body, state, indent)
+            body, state, indent
         ),
         FinalizedExpr::FunctionCall(ref funk, ref args, _is_tail_call, _is_self_call) => {
             format_list(
