@@ -1,8 +1,7 @@
-#![feature(plugin)]
-#![plugin(afl_plugin)]
-
-extern crate afl;
+#![no_main]
+#[macro_use] extern crate libfuzzer_sys;
 extern crate yalp;
+
 
 use yalp::State;
 use yalp::parse::parse_lisp_string;
@@ -45,7 +44,9 @@ fn exec_command(s: &str, state: &mut State) {
     }
 }
 
-fn main() {
+fuzz_target!(|data: &[u8]| {
+    // TODO: do not rebuild the entire state every time.
+    // This is wicked slow.
     let mut state = State::default();
 
     for def in PRELUDE {
@@ -54,7 +55,7 @@ fn main() {
         yalp::evaluator::eval(parse_res, &mut state).expect("Prelude statement failed to execute!");
     }
 
-    afl::handle_string(|s| {
-        exec_command(&s, &mut state);
-    });
-}
+    if let Ok(s) = ::std::str::from_utf8(data) {
+        exec_command(s, &mut state);
+    }
+});
