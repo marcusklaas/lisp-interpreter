@@ -56,7 +56,7 @@ impl<'a> Iterator for Tokens<'a> {
             let mut num = first.to_digit(10).unwrap();
 
             while let Some(d) = chars.peek().and_then(|c| c.to_digit(10)) {
-                num = num * 10 + d;
+                num = num.wrapping_mul(10).wrapping_add(d);
                 chars.next();
             }
 

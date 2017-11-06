@@ -5,8 +5,16 @@ version = "0.0.1"
 authors = ["Automatically generated"]
 publish = false
 
+[dependencies]
+futures = "*"
+futures-cpupool = "*"
+tokio-timer = "*"
+
 [package.metadata]
 cargo-fuzz = true
+
+[dependencies.lazy_static]
+version = "*"
 
 [dependencies.yalp]
 path = ".."

@@ -1,9 +1,19 @@
 #![no_main]
 #[macro_use] extern crate libfuzzer_sys;
+#[macro_use] extern crate lazy_static;
 extern crate yalp;
+extern crate futures;
+extern crate futures_cpupool;
+extern crate tokio_timer;
 
+use std::time::Duration;
+use std::cell::UnsafeCell;
 
-use yalp::State;
+use futures::Future;
+use futures_cpupool::CpuPool;
+use tokio_timer::Timer;
+
+use yalp::{LispExpr, State};
 use yalp::parse::parse_lisp_string;
 
 const PRELUDE: &'static [&'static str] = &[
@@ -26,36 +36,68 @@ const PRELUDE: &'static [&'static str] = &[
     "(define foldr (lambda (f xs init) (cond (null? xs) init (foldr f (cdr xs) (f init (car xs))))))",
 ];
 
-fn exec_command(s: &str, state: &mut State) {
-    let parse_result = parse_lisp_string(s, state);
-    let last_intern = state.intern(":last");
+struct ExprWrapper(LispExpr);
+
+unsafe impl Send for ExprWrapper {}
+unsafe impl Sync for ExprWrapper {}
+
+fn exec_command(s: &str) {
+    let parse_result = parse_lisp_string(s, STATE.get_inner());
 
     match parse_result {
-        Ok(expr) => match yalp::evaluator::eval(expr, state) {
-            Ok(val) => {
-                println!("{}", yalp::print::print_value(&val, state, 0));
-                state.set_variable(last_intern, val, true).unwrap();
-            }
-            Err(eval_err) => println!("Evaluation error: {:?}", eval_err),
-        },
+        Ok(expr) => {
+            let pool = CpuPool::new_num_cpus();
+            let timer = Timer::default();
+
+            // a future that resolves to Err after a timeout
+            let timeout = timer.sleep(Duration::from_millis(50))
+                .then(|_| Err(()));
+
+            let wrapped_expr = ExprWrapper(expr);
+            let eval = pool.spawn_fn(move || {
+                let e = wrapped_expr.0;
+                yalp::evaluator::eval(e, STATE.get_inner()).map(|_| ()).map_err(|_| ())
+            });
+
+            // a future that resolves to one of the above values -- whichever
+            // completes first!
+            let _ = timeout.select(eval).wait();
+        }
         Err(ref parse_err) => {
             println!("Parse error: {:?}", parse_err);
         }
     }
 }
 
-fuzz_target!(|data: &[u8]| {
-    // TODO: do not rebuild the entire state every time.
-    // This is wicked slow.
-    let mut state = State::default();
+struct StateWrapper(UnsafeCell<State>);
 
-    for def in PRELUDE {
-        let parse_res =
-            parse_lisp_string(def, &mut state).expect("Prelude statement failed to parse!");
-        yalp::evaluator::eval(parse_res, &mut state).expect("Prelude statement failed to execute!");
+impl StateWrapper {
+    fn get_inner(&self) -> &mut State {
+        unsafe {
+            &mut *self.0.get()
+        }
     }
+}
 
+unsafe impl Send for StateWrapper {}
+unsafe impl Sync for StateWrapper {}
+
+lazy_static! {
+    static ref STATE: StateWrapper = {
+        let mut state = State::default();
+
+        for def in PRELUDE {
+            let parse_res =
+                parse_lisp_string(def, &mut state).expect("Prelude statement failed to parse!");
+            yalp::evaluator::eval(parse_res, &mut state).expect("Prelude statement failed to execute!");
+        }
+
+        StateWrapper(UnsafeCell::new(state))
+    };
+}
+
+fuzz_target!(|data: &[u8]| {
     if let Ok(s) = ::std::str::from_utf8(data) {
-        exec_command(s, &mut state);
+        exec_command(s);
     }
 });
