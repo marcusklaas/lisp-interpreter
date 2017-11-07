@@ -1,11 +1,11 @@
-#![cfg_attr(feature = "clippy", feature(plugin))]
+#![cfg_attr(test, plugin(quickcheck_macros))]
 #![cfg_attr(feature = "clippy", plugin(clippy))]
 #![cfg_attr(test, feature(test))]
-#![feature(splice, slice_patterns, slice_get_slice, collections_range)]
+#![feature(plugin, splice, slice_patterns, slice_get_slice, collections_range)]
 
 extern crate string_interner;
-#[cfg(test)]
-extern crate test;
+#[cfg(test)] extern crate test;
+#[cfg(test)] extern crate quickcheck;
 
 pub mod parse;
 pub mod evaluator;
@@ -1249,6 +1249,18 @@ mod tests {
         } else {
             super::compile_finalized_expr(finalized_expr, returns, &mut state).unwrap()
         }
+    }
+
+    impl ::quickcheck::Arbitrary for LispValue {
+        fn arbitrary<G: ::quickcheck::Gen>(g: &mut G) -> LispValue {
+            LispValue::Integer(0)
+        }
+    }
+
+    // Quickcheck tests
+    #[quickcheck]
+    fn quickcheck_test_one(x: LispValue) -> bool {
+        true
     }
 
     #[test]
