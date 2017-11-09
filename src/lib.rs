@@ -3,9 +3,11 @@
 #![cfg_attr(test, feature(test))]
 #![feature(plugin, splice, slice_patterns, slice_get_slice, collections_range)]
 
+#[cfg(test)]
+extern crate quickcheck;
 extern crate string_interner;
-#[cfg(test)] extern crate test;
-#[cfg(test)] extern crate quickcheck;
+#[cfg(test)]
+extern crate test;
 
 pub mod parse;
 pub mod evaluator;
@@ -14,7 +16,7 @@ pub mod print;
 use std::mem::{replace, transmute_copy};
 use std::convert::From;
 use std::fmt;
-use std::rc::Rc;
+use std::sync::Arc;
 use std::cell::UnsafeCell;
 use std::collections::hash_map;
 use std::collections::HashMap;
@@ -119,6 +121,10 @@ struct InnerCustomFunc {
     byte_code: UnsafeCell<Vec<Instr>>,
 }
 
+// FIXME: this is actually unsound - find a better way!
+unsafe impl Send for InnerCustomFunc {}
+unsafe impl Sync for InnerCustomFunc {}
+
 #[derive(Debug, Clone)]
 pub struct State {
     interns: StringInterner<InternedString>,
@@ -188,7 +194,7 @@ impl State {
 /// operation - all details of a function are kept in a reference counted
 /// structure. This makes copying functions cheap.
 #[derive(Debug, Clone)]
-pub struct CustomFunc(Rc<InnerCustomFunc>);
+pub struct CustomFunc(Arc<InnerCustomFunc>);
 
 impl PartialEq for CustomFunc {
     fn eq(&self, other: &CustomFunc) -> bool {
@@ -214,7 +220,7 @@ impl CustomFunc {
     }
 
     fn from_byte_code(arg_count: usize, bytecode: Vec<Instr>) -> Self {
-        CustomFunc(Rc::new(InnerCustomFunc {
+        CustomFunc(Arc::new(InnerCustomFunc {
             arg_count: arg_count,
             // dummy value
             body: FinalizedExpr::Value(LispValue::Boolean(false)),
@@ -317,7 +323,7 @@ pub enum LispFunc {
 
 impl LispFunc {
     fn new_custom(arg_count: usize, body: FinalizedExpr, returns: bool) -> LispFunc {
-        LispFunc::Custom(CustomFunc(Rc::new(InnerCustomFunc {
+        LispFunc::Custom(CustomFunc(Arc::new(InnerCustomFunc {
             arg_count,
             body,
             returns,
