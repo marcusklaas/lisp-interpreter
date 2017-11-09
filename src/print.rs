@@ -1,6 +1,6 @@
 use std::iter::repeat;
 
-use super::{CustomFunc, FinalizedExpr, LispFunc, LispValue, State, Scope};
+use super::{CustomFunc, FinalizedExpr, LispFunc, LispValue, Scope, State};
 
 pub fn print_value(val: &LispValue, state: &State, indent: usize) -> String {
     match *val {
@@ -60,7 +60,13 @@ fn print_custom_func(f: &CustomFunc, state: &State, indent: usize) -> String {
     print_lambda(f.0.arg_count, Scope(0), &f.0.body, state, indent)
 }
 
-fn print_lambda(arg_count: usize, scope: Scope, body: &FinalizedExpr, state: &State, indent: usize) -> String {
+fn print_lambda(
+    arg_count: usize,
+    scope: Scope,
+    body: &FinalizedExpr,
+    state: &State,
+    indent: usize,
+) -> String {
     let mut result = "(".to_owned();
 
     for i in 0..arg_count {
@@ -96,11 +102,9 @@ fn print_finalized_expr(expr: &FinalizedExpr, state: &State, indent: usize) -> S
                 .chain(Some(&*true_expr).into_iter().chain(Some(&*false_expr)));
             format_list(state, indent, "cond", expr_iter)
         }
-        FinalizedExpr::Lambda(arg_c, scope, ref body, _) => print_lambda(
-            arg_c,
-            scope,
-            body, state, indent
-        ),
+        FinalizedExpr::Lambda(arg_c, scope, ref body, _) => {
+            print_lambda(arg_c, scope, body, state, indent)
+        }
         FinalizedExpr::FunctionCall(ref funk, ref args, _is_tail_call, _is_self_call) => {
             format_list(
                 state,
