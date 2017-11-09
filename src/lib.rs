@@ -1260,7 +1260,43 @@ mod tests {
 
     impl Arbitrary for LispValue {
         fn arbitrary<G: Gen>(g: &mut G) -> LispValue {
-            LispValue::Integer(0)
+            enum ValueVariant {
+                List,
+                Int,
+                Bool,
+                Func,
+            };
+
+            let choices = [
+                ValueVariant::List,
+                ValueVariant::Int,
+                ValueVariant::Bool,
+                ValueVariant::Func,
+            ];
+            let variant = g.choose(&choices).unwrap();
+
+            match *variant {
+                ValueVariant::Int => LispValue::Integer(g.gen()),
+                ValueVariant::Bool => LispValue::Boolean(g.gen()),
+                ValueVariant::List => {
+                    // We shouldn't generate lists too long too often,
+                    // or this procedure will not terminate with finite
+                    // probability.
+                    let max_len = choices.len();
+                    let len = (g.next_u64() as usize) % max_len;
+                    let mut vek = Vec::new();
+
+                    for _ in 0..len {
+                        vek.push(Arbitrary::arbitrary(g));
+                    }
+
+                    LispValue::List(vek)
+                }
+                ValueVariant::Func => {
+                    let f = LispFunc::BuiltIn(BuiltIn::AddOne);
+                    LispValue::Function(f)
+                }
+            }
         }
     }
 
