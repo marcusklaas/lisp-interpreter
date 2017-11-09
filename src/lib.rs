@@ -1188,6 +1188,7 @@ fn compile_finalized_expr(
 mod tests {
     use super::*;
     use super::parse::{parse_lisp_string, ParseError};
+    use quickcheck::{Arbitrary, Gen};
     use std::convert::From;
 
     #[derive(Debug, PartialEq, Eq)]
@@ -1257,16 +1258,24 @@ mod tests {
         }
     }
 
-    impl ::quickcheck::Arbitrary for LispValue {
-        fn arbitrary<G: ::quickcheck::Gen>(g: &mut G) -> LispValue {
+    impl Arbitrary for LispValue {
+        fn arbitrary<G: Gen>(g: &mut G) -> LispValue {
             LispValue::Integer(0)
         }
     }
 
     // Quickcheck tests
     #[quickcheck]
-    fn quickcheck_test_one(x: LispValue) -> bool {
-        true
+    fn quickcheck_identity(x: LispValue) -> bool {
+        let mut state = Default::default();
+        let expr = LispExpr::Call(vec![
+            parse_lisp_string("(lambda (x) x)", &mut state).unwrap(),
+            LispExpr::Value(x.clone()),
+        ]);
+
+        let result = evaluator::eval(expr, &mut state).unwrap();
+
+        result == x
     }
 
     #[test]
