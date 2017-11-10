@@ -1450,6 +1450,18 @@ mod tests {
     }
 
     #[test]
+    fn church_numerals() {
+        check_lisp_ok(
+            vec![
+                "(define n0 (lambda (f x) x))",
+                "(define incr (lambda (n f x) (f (n f x))))",
+                "((incr n0) add1 0)",
+            ],
+            "1",
+        );
+    }
+
+    #[test]
     fn display_int_val() {
         let state = Default::default();
         let val = LispValue::Integer(5);
