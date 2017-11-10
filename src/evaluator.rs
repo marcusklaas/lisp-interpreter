@@ -386,6 +386,8 @@ fn run(instructions: Vec<Instr>, state: &State) -> EvaluationResult<LispValue> {
         }
     }
 
+    println!("{:?}", &value_stack);
+
     assert!(frame_stack.is_empty());
     assert_eq!(value_stack.len(), 1);
     Ok(value_stack.pop().unwrap())

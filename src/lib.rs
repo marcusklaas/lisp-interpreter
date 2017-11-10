@@ -855,7 +855,7 @@ impl LispExpr {
                         } else {
                             None
                         };
-                        
+
                         let funk = head_expr.finalize(ctx)?.0;
 
                         for e in expr_iter.rev() {
@@ -1396,6 +1396,18 @@ mod tests {
     }
 
     #[test]
+    fn church_pair() {
+        check_lisp_ok(
+            vec![
+                "(define pair (lambda (x y f) (f x y)))",
+                "(define snd (lambda (x y) y))",
+                "(pair 1 2 snd)",
+            ],
+            "2",
+        );
+    }
+
+    #[test]
     fn cond_argument() {
         check_lisp_ok(
             vec![
@@ -1771,10 +1783,7 @@ mod tests {
     #[test]
     fn twice() {
         check_lisp_ok(
-            vec![
-                "(define twice (lambda (f x) (f (f x))))",
-                "(twice add1 0)",
-            ],
+            vec!["(define twice (lambda (f x) (f (f x))))", "(twice add1 0)"],
             "2",
         );
     }
