@@ -62,7 +62,8 @@ pub fn eval(expr: LispExpr, state: &mut State) -> EvaluationResult<LispValue> {
             )
         }
         TopExpr::Regular(sub_expr, _returns) => {
-            (compile_finalized_expr(sub_expr, true, state)?, None)
+            let instr_vec = compile_finalized_expr(sub_expr, true, state)?;
+            (instr_vec, None)
         }
     };
 
@@ -262,7 +263,7 @@ fn run(instructions: Vec<Instr>, state: &State) -> EvaluationResult<LispValue> {
                                         - frame.stack_pointer.to_usize()
                                         - func_arg_count;
                                     if remove_count > 0 {
-                                        // Remove old arguments of the stack.
+                                        // Remove old arguments from the stack.
                                         let bottom_index = frame.stack_pointer
                                             + StackOffset::from(arg_reuse_count);
                                         let top_index =

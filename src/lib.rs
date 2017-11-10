@@ -214,7 +214,6 @@ impl CustomFunc {
                 let mut_borrowed = &mut *self.0.byte_code.get();
                 *mut_borrowed = compile_finalized_expr(self.0.body.clone(), self.0.returns, state)?;
                 mut_borrowed.insert(0, Instr::Return);
-                println!("{:?}", mut_borrowed);
                 Ok(&mut_borrowed[..])
             }
         }
@@ -390,11 +389,10 @@ enum FinalizedExpr {
     // Arg count, scope level, body, returns
     Lambda(usize, Scope, Box<FinalizedExpr>, bool),
     // test expr, true branch, false branch.
-    // false branch returns, true branch returns, tail call status of cond
+    // true branch returns, tail call status of cond
     // TODO: clean up this variant.
     Cond(
         Box<(FinalizedExpr, FinalizedExpr, FinalizedExpr)>,
-        bool,
         bool,
         TailCallStatus,
     ),
@@ -431,7 +429,7 @@ impl FinalizedExpr {
                     self_call,
                 )
             }
-            FinalizedExpr::Cond(boks, false_expr_returns, true_expr_returns, tail_call_status) => {
+            FinalizedExpr::Cond(boks, true_expr_returns, tail_call_status) => {
                 let triple = *boks;
                 let (test, true_expr, false_expr) = triple;
 
@@ -441,7 +439,6 @@ impl FinalizedExpr {
                         true_expr.remove_subs_of(offset, scope),
                         false_expr.remove_subs_of(offset, scope),
                     )),
-                    false_expr_returns,
                     true_expr_returns,
                     tail_call_status,
                 )
@@ -502,12 +499,7 @@ impl FinalizedExpr {
                     is_self_call,
                 )
             }
-            FinalizedExpr::Cond(
-                ref triple,
-                false_expr_returns,
-                true_expr_returns,
-                tail_call_status,
-            ) => {
+            FinalizedExpr::Cond(ref triple, true_expr_returns, tail_call_status) => {
                 let (ref test, ref true_expr, ref false_expr) = **triple;
                 FinalizedExpr::Cond(
                     Box::new((
@@ -515,7 +507,6 @@ impl FinalizedExpr {
                         true_expr.replace_args(scope_level, stack),
                         false_expr.replace_args(scope_level, stack),
                     )),
-                    false_expr_returns,
                     true_expr_returns,
                     tail_call_status,
                 )
@@ -737,7 +728,7 @@ impl LispExpr {
                                 arguments: false_expr_args,
                                 ..*ctx
                             };
-                            let (finalized_false_expr, false_returns) =
+                            let (finalized_false_expr, _false_returns) =
                                 false_expr.finalize(&mut false_expr_ctx)?;
                             let (finalized_true_expr, true_returns) = true_expr.finalize(ctx)?;
 
@@ -763,7 +754,6 @@ impl LispExpr {
                                         finalized_true_expr,
                                         finalized_false_expr,
                                     )),
-                                    false_returns,
                                     true_returns,
                                     could_tail_call,
                                 ),
@@ -978,7 +968,7 @@ fn inner_compile(
                 state.resolve_intern(n).into(),
             ));
         },
-        FinalizedExpr::Cond(triple, false_expr_returns, true_expr_returns, tail_call_status) => {
+        FinalizedExpr::Cond(triple, true_expr_returns, tail_call_status) => {
             let unpacked = *triple;
             let (test, true_expr, false_expr) = unpacked;
 
@@ -997,14 +987,13 @@ fn inner_compile(
             let jump_size = instructions.len() - before_len;
             let before_len = instructions.len();
 
-            // If the false branch never returns, because it is a tail call,
-            // we do not need to place a jump instruction
-            if false_expr_returns {
-                if tail_call_status == TailCallStatus::CanTailCall {
-                    instructions.push(Instr::Return);
-                } else {
-                    instructions.push(Instr::Jump(jump_size));
-                }
+            // We should probably always place either one of these. Even if we knew
+            // that the false expression *could* tail call, we are not sure if it
+            // will, for example when it is a curried result
+            if tail_call_status == TailCallStatus::CanTailCall {
+                instructions.push(Instr::Return);
+            } else {
+                instructions.push(Instr::Jump(jump_size));
             }
 
             if let FinalizedExpr::FunctionCall(ref f_box, ref args, ..) = test {
@@ -1328,9 +1317,10 @@ mod tests {
             vec![
                 Instr::Return,
                 Instr::MoveArgument(From::from(0)),
+                Instr::Return,
                 Instr::Recurse(0),
                 Instr::VarAddOne(From::from(0)),
-                Instr::CondZeroJumpDecr(From::from(1), 2),
+                Instr::CondZeroJumpDecr(From::from(1), 3),
             ]
         );
     }
@@ -1375,10 +1365,12 @@ mod tests {
                 Instr::Return,
                 Instr::PushValue(LispValue::Boolean(false)),
                 Instr::Return,
+                Instr::Return,
                 Instr::PushValue(LispValue::Boolean(true)),
+                Instr::Return,
                 Instr::Recurse(0),
-                Instr::CondZeroJumpDecr(From::from(1), 1),
-                Instr::CondZeroJumpDecr(From::from(0), 4),
+                Instr::CondZeroJumpDecr(From::from(1), 2),
+                Instr::CondZeroJumpDecr(From::from(0), 6),
             ]
         );
     }
@@ -1439,6 +1431,17 @@ mod tests {
                 "((lambda (x) (add x ((lambda (x) (add (sub1 x) x)) x))) 4)",
             ],
             "11",
+        );
+    }
+
+    #[test]
+    fn return_curried_fn() {
+        check_lisp_ok(
+            vec![
+                "(define add (lambda (x y) (cond (zero? y) x (add (add1 x) (sub1 y)))))",
+                "(((lambda () (cond #f 0 (add 1)))) 2)",
+            ],
+            "3",
         );
     }
 
