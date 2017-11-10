@@ -214,6 +214,7 @@ impl CustomFunc {
                 let mut_borrowed = &mut *self.0.byte_code.get();
                 *mut_borrowed = compile_finalized_expr(self.0.body.clone(), self.0.returns, state)?;
                 mut_borrowed.insert(0, Instr::Return);
+                println!("{:?}", mut_borrowed);
                 Ok(&mut_borrowed[..])
             }
         }
@@ -1124,15 +1125,7 @@ fn inner_compile(
                 instructions.push(Instr::Recurse(args_len));
             } else {
                 instructions.push(Instr::EvalFunction(args_len, None));
-
-                match *funk {
-                    FinalizedExpr::Argument(offset, _scope, VariableConstraint::Unconstrained)
-                        if offset.to_usize() == args.len() =>
-                    {
-                        // function is already at the top of the stack - no need to do anything!
-                    }
-                    f => inner_compile(f, state, instructions, var_stats)?,
-                }
+                inner_compile(*funk, state, instructions, var_stats)?;
             }
 
             // Compiling all arguments
