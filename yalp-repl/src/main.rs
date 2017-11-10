@@ -34,7 +34,8 @@ fn exec_command(s: &str, state: &mut State) {
     match parse_result {
         Ok(expr) => match yalp::evaluator::eval(expr, state) {
             Ok(val) => {
-                println!("{}", yalp::print::print_value(&val, state, 0));
+                // println!("{}", yalp::print::print_value(&val, state, 0));
+                println!("{:?}", &val);
                 state.set_variable(last_intern, val, true).unwrap();
             }
             Err(eval_err) => println!("Evaluation error: {:?}", eval_err),

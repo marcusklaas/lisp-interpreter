@@ -855,6 +855,8 @@ impl LispExpr {
                         } else {
                             None
                         };
+                        
+                        let funk = head_expr.finalize(ctx)?.0;
 
                         for e in expr_iter.rev() {
                             let arg = deal_with_opvar(e, ctx, caller)?.0;
@@ -862,7 +864,6 @@ impl LispExpr {
                         }
                         arg_finalized_expr.reverse();
 
-                        let funk = head_expr.finalize(ctx)?.0;
                         (
                             FinalizedExpr::FunctionCall(
                                 Box::new(funk),
@@ -1764,6 +1765,17 @@ mod tests {
                 "(range 1 5)",
             ],
             "(1 2 3 4 5)",
+        );
+    }
+
+    #[test]
+    fn twice() {
+        check_lisp_ok(
+            vec![
+                "(define twice (lambda (f x) (f (f x))))",
+                "(twice add1 0)",
+            ],
+            "2",
         );
     }
 

@@ -1,12 +1,3 @@
-[root]
-name = "yalp-repl"
-version = "0.1.0"
-dependencies = [
- "clippy 0.0.165 (registry+https://github.com/rust-lang/crates.io-index)",
- "rustyline 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "yalp 0.1.0",
-]
-
 [[package]]
 name = "bitflags"
 version = "0.4.0"
@@ -271,6 +262,15 @@ name = "yalp"
 version = "0.1.0"
 dependencies = [
  "string-interner 0.6.3 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "yalp-repl"
+version = "0.1.0"
+dependencies = [
+ "clippy 0.0.165 (registry+https://github.com/rust-lang/crates.io-index)",
+ "rustyline 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "yalp 0.1.0",
 ]
 
 [metadata]
