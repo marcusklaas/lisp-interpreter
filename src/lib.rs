@@ -1124,7 +1124,15 @@ fn inner_compile(
                 instructions.push(Instr::Recurse(args_len));
             } else {
                 instructions.push(Instr::EvalFunction(args_len, None));
-                inner_compile(*funk, state, instructions, var_stats)?;
+
+                match *funk {
+                    FinalizedExpr::Argument(offset, _scope, VariableConstraint::Unconstrained)
+                        if offset.to_usize() == args.len() =>
+                    {
+                        // function is already at the top of the stack - no need to do anything!
+                    }
+                    f => inner_compile(f, state, instructions, var_stats)?,
+                }
             }
 
             // Compiling all arguments
