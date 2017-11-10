@@ -25,6 +25,8 @@ const PRELUDE: &'static [&'static str] = &[
     "(define reverse (lambda (l) (cond (null? l) l (append (list (car l)) (reverse (cdr l))))))",
     "(define !! (lambda (l i) (cond (zero? i) (car l) (!! (cdr l) (sub1 i)))))",
     "(define foldr (lambda (f xs init) (cond (null? xs) init (foldr f (cdr xs) (f init (car xs))))))",
+    "(define n0 (lambda (f x) x))",
+    "(define incr (lambda (n f x) (f (n f x))))",
 ];
 
 fn exec_command(s: &str, state: &mut State) {
@@ -34,8 +36,8 @@ fn exec_command(s: &str, state: &mut State) {
     match parse_result {
         Ok(expr) => match yalp::evaluator::eval(expr, state) {
             Ok(val) => {
-                // println!("{}", yalp::print::print_value(&val, state, 0));
-                println!("{:?}", &val);
+                println!("{}", yalp::print::print_value(&val, state, 0));
+                // println!("{:?}", &val);
                 state.set_variable(last_intern, val, true).unwrap();
             }
             Err(eval_err) => println!("Evaluation error: {:?}", eval_err),

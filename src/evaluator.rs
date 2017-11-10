@@ -238,7 +238,8 @@ fn run(instructions: Vec<Instr>, state: &State) -> EvaluationResult<LispValue> {
             // Pops a function off the value stack and applies it to the values
             // at the top of the value stack
             Instr::EvalFunction(arg_count, tail_call_args) => {
-                if let LispValue::Function(funk) = value_stack.pop().unwrap() {
+                let top_stack = value_stack.pop().unwrap();
+                if let LispValue::Function(funk) = top_stack {
                     let (next_func, push_stack) = match funk {
                         LispFunc::BuiltIn(b) => {
                             // The performance of this solution is basically horrendous,
@@ -315,6 +316,7 @@ fn run(instructions: Vec<Instr>, state: &State) -> EvaluationResult<LispValue> {
                         frame = next_frame;
                     }
                 } else {
+                    println!("Tried to apply {:?}", top_stack);
                     return Err(EvaluationError::NonFunctionApplication);
                 }
             }
