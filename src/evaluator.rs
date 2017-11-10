@@ -258,13 +258,15 @@ fn run(instructions: Vec<Instr>, state: &State) -> EvaluationResult<LispValue> {
                             // Exactly right number of arguments. Let's evaluate.
                             if func_arg_count == arg_count {
                                 if let Some(arg_reuse_count) = tail_call_args {
-                                    if arg_reuse_count != func_arg_count {
+                                    let remove_count = value_stack.len()
+                                        - frame.stack_pointer.to_usize()
+                                        - func_arg_count;
+                                    if remove_count > 0 {
                                         // Remove old arguments of the stack.
-                                        let top_index = StackOffset::from(
-                                            value_stack.len() - func_arg_count + arg_reuse_count,
-                                        );
                                         let bottom_index = frame.stack_pointer
                                             + StackOffset::from(arg_reuse_count);
+                                        let top_index =
+                                            bottom_index + StackOffset::from(remove_count);
                                         remove_old_arguments(
                                             &mut value_stack,
                                             bottom_index,
