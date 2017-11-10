@@ -32,7 +32,8 @@ const PRELUDE: &'static [&'static str] = &[
     "(define cpair (lambda (x y f) (f x y)))",
     "(define cfst (lambda (x y) x))",
     "(define csnd (lambda (x y) y))",
-    "(define cup (lambda (p) (cpair (p csnd) (incr (p csnd)))))"
+    "(define cup (lambda (p) (cpair (p csnd) (incr (p csnd)))))",
+    "(define decr (lambda (n) ((n cup (cpair n0 n0)) cfst)))",
 ];
 
 fn exec_command(s: &str, state: &mut State) {
