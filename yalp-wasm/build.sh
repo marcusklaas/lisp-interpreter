@@ -1,5 +1,4 @@
 #!/bin/bash
 
-wargo build --release
-find target/wasm32-unknown-emscripten/release/deps -type f -name "*.wasm" | xargs -I {} cp {} site/site.wasm
-find target/wasm32-unknown-emscripten/release/deps -type f ! -name "*.asm.js" -name "*.js" | xargs -I {} cp {} site/site.js
+cargo build --release --target wasm32-unknown-unknown
+cp target/wasm32-unknown-unknown/release/yalp-wasm.wasm site/site.wasm

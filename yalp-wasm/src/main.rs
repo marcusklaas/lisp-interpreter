@@ -7,11 +7,8 @@ use yalp::State;
 use yalp::parse::parse_lisp_string;
 
 use std::mem::{forget, transmute};
-use std::os::raw::c_char;
+use std::os::raw::{c_void, c_char};
 use std::ffi::{CStr, CString};
-
-#[link_args = "-s EXPORTED_FUNCTIONS=['_exec_command','_create_state','_free_state','_defined_variables']"]
-extern "C" {}
 
 const PRELUDE: &'static [&'static str] = &[
     "(define closure (lambda (x) (lambda (y) (add x y))))",
@@ -86,6 +83,22 @@ pub extern "C" fn defined_variables(state_ptr: *mut State) -> *mut c_char {
     CString::new(var_vec.join(", ")).unwrap().into_raw()
 }
 
-fn main() {
-    // intentionally blank
+// In order to work with the memory we expose (de)allocation methods
+#[no_mangle]
+pub extern "C" fn alloc(size: usize) -> *mut c_void {
+    let mut buf = Vec::with_capacity(size);
+    let ptr = buf.as_mut_ptr();
+    forget(buf);
+    ptr as *mut c_void
 }
+
+#[no_mangle]
+pub extern "C" fn dealloc(ptr: *mut c_void, cap: usize) {
+    unsafe  {
+        let _buf = Vec::from_raw_parts(ptr, 0, cap);
+    }
+}
+
+// We need to provide an (empty) main function,
+// as the target currently is compiled as a binary.
+fn main() {}
