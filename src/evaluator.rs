@@ -21,7 +21,7 @@ fn unitary_list<F: Fn(&mut Vec<LispValue>) -> EvaluationResult<LispValue>>(
 }
 
 fn remove_old_arguments(stack: &mut Vec<LispValue>, start: StackOffset, end: StackOffset) {
-    stack.splice(From::from(start)..From::from(end), iter::empty());
+    stack.splice(start.to_usize()..end.to_usize(), iter::empty());
 }
 
 struct StackRef {
@@ -102,27 +102,35 @@ fn run(instructions: Vec<Instr>, state: &State) -> EvaluationResult<LispValue> {
                     break 'l;
                 }
             }
-            Instr::VarAddOne(offset) => if let LispValue::Integer(ref mut i) =
-                *value_stack.get_mut(frame.stack_pointer + offset).unwrap()
-            {
-                *i += 1;
-            } else {
-                return Err(EvaluationError::ArgumentTypeMismatch);
-            },
-            Instr::CondZeroJumpDecr(offset, jump_size) => if let LispValue::Integer(ref mut i) =
-                *value_stack.get_mut(frame.stack_pointer + offset).unwrap()
-            {
-                if *i == 0 {
-                    frame.instr_pointer -= jump_size;
+            Instr::VarAddOne(offset) => {
+                let idx = frame.stack_pointer + offset;
+
+                if let LispValue::Integer(ref mut i) =
+                    *value_stack.get_mut(idx.to_usize()).unwrap()
+                {
+                    *i += 1;
                 } else {
-                    *i -= 1;
+                    return Err(EvaluationError::ArgumentTypeMismatch);
                 }
-            } else {
-                return Err(EvaluationError::ArgumentTypeMismatch);
+            },
+            Instr::CondZeroJumpDecr(offset, jump_size) => {
+                let idx = frame.stack_pointer + offset;
+                if let LispValue::Integer(ref mut i) =
+                    *value_stack.get_mut(idx.to_usize()).unwrap()
+                {
+                    if *i == 0 {
+                        frame.instr_pointer -= jump_size;
+                    } else {
+                        *i -= 1;
+                    }
+                } else {
+                    return Err(EvaluationError::ArgumentTypeMismatch);
+                }
             },
             Instr::VarCheckNull(offset) => {
+                let idx = frame.stack_pointer + offset;
                 let head = if let LispValue::List(ref l) =
-                    *value_stack.get(frame.stack_pointer + offset).unwrap()
+                    *value_stack.get(idx.to_usize()).unwrap()
                 {
                     LispValue::Boolean(l.is_empty())
                 } else {
@@ -132,8 +140,9 @@ fn run(instructions: Vec<Instr>, state: &State) -> EvaluationResult<LispValue> {
                 value_stack.push(head);
             }
             Instr::VarCheckZero(offset) => {
+                let idx = frame.stack_pointer + offset;
                 let head = if let LispValue::Integer(i) =
-                    *value_stack.get(frame.stack_pointer + offset).unwrap()
+                    *value_stack.get(idx.to_usize()).unwrap()
                 {
                     LispValue::Boolean(i == 0)
                 } else {
@@ -143,8 +152,9 @@ fn run(instructions: Vec<Instr>, state: &State) -> EvaluationResult<LispValue> {
                 value_stack.push(head);
             }
             Instr::VarSplit(offset) => {
+                let idx = frame.stack_pointer + offset;
                 let head = if let LispValue::List(ref mut list) =
-                    *value_stack.get_mut(frame.stack_pointer + offset).unwrap()
+                    *value_stack.get_mut(idx.to_usize()).unwrap()
                 {
                     if let Some(elem) = list.pop() {
                         elem
@@ -160,7 +170,8 @@ fn run(instructions: Vec<Instr>, state: &State) -> EvaluationResult<LispValue> {
             Instr::VarReverseSplit(offset) => {
                 // TODO: see if we can do this more efficiently/ elegantly
                 let tail = {
-                    let reference = value_stack.get_mut(frame.stack_pointer + offset).unwrap();
+                    let idx = frame.stack_pointer + offset;
+                    let reference = value_stack.get_mut(idx.to_usize()).unwrap();
                     let mut head = if let LispValue::List(ref mut list) = *reference {
                         if let Some(elem) = list.pop() {
                             elem
@@ -178,8 +189,9 @@ fn run(instructions: Vec<Instr>, state: &State) -> EvaluationResult<LispValue> {
                 value_stack.push(tail);
             }
             Instr::VarCar(offset) => {
+                let idx = frame.stack_pointer + offset;
                 let head = if let LispValue::List(ref list) =
-                    *value_stack.get(frame.stack_pointer + offset).unwrap()
+                    *value_stack.get(idx.to_usize()).unwrap()
                 {
                     if let Some(elem) = list.last().cloned() {
                         elem
@@ -226,12 +238,13 @@ fn run(instructions: Vec<Instr>, state: &State) -> EvaluationResult<LispValue> {
             }
             Instr::CloneArgument(offset) => {
                 let idx = frame.stack_pointer + offset;
-                let value = (&value_stack[..]).index(idx).clone();
+                let value = (&value_stack[..]).index(idx.to_usize()).clone();
                 value_stack.push(value);
             }
             Instr::MoveArgument(offset) => {
+                let idx = frame.stack_pointer + offset;
                 let val = replace(
-                    value_stack.get_mut(frame.stack_pointer + offset).unwrap(),
+                    value_stack.get_mut(idx.to_usize()).unwrap(),
                     LispValue::Boolean(false),
                 );
                 value_stack.push(val);
@@ -319,7 +332,6 @@ fn run(instructions: Vec<Instr>, state: &State) -> EvaluationResult<LispValue> {
                         frame = next_frame;
                     }
                 } else {
-                    println!("Tried to apply {:?}", top_stack);
                     return Err(EvaluationError::NonFunctionApplication);
                 }
             }

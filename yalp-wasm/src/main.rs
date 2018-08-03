@@ -1,4 +1,4 @@
-#![feature(link_args)]
+#![feature(link_args, start)]
 #![allow(unused_attributes)]
 
 extern crate yalp;
@@ -9,9 +9,6 @@ use yalp::parse::parse_lisp_string;
 use std::mem::{forget, transmute};
 use std::os::raw::c_char;
 use std::ffi::{CStr, CString};
-
-#[link_args = "-s EXPORTED_FUNCTIONS=['_exec_command','_create_state','_free_state','_defined_variables']"]
-extern "C" {}
 
 const PRELUDE: &'static [&'static str] = &[
     "(define closure (lambda (x) (lambda (y) (add x y))))",
