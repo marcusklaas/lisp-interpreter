@@ -1,9 +1,9 @@
-#![cfg_attr(test, plugin(quickcheck_macros))]
 #![cfg_attr(feature = "clippy", plugin(clippy))]
 #![cfg_attr(test, feature(test))]
 #![feature(plugin, splice, slice_patterns, slice_get_slice, collections_range, slice_index_methods)]
 
 #[cfg(test)]
+#[macro_use]
 extern crate quickcheck;
 extern crate string_interner;
 #[cfg(test)]
@@ -1263,17 +1263,18 @@ mod tests {
     }
 
     // Quickcheck tests
-    #[quickcheck]
-    fn quickcheck_identity(x: LispValue) -> bool {
-        let mut state = Default::default();
-        let expr = LispExpr::Call(vec![
-            parse_lisp_string("(lambda (x) x)", &mut state).unwrap(),
-            LispExpr::Value(x.clone()),
-        ]);
+    quickcheck! {
+        fn quickcheck_identity(x: LispValue) -> bool {
+            let mut state = Default::default();
+            let expr = LispExpr::Call(vec![
+                parse_lisp_string("(lambda (x) x)", &mut state).unwrap(),
+                LispExpr::Value(x.clone()),
+            ]);
 
-        let result = evaluator::eval(expr, &mut state).unwrap();
+            let result = evaluator::eval(expr, &mut state).unwrap();
 
-        result == x
+            result == x
+        }
     }
 
     #[test]
