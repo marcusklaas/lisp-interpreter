@@ -1,5 +1,5 @@
-use std::str::Chars;
 use std::iter::Peekable;
+use std::str::Chars;
 
 use super::{BuiltIn, LispExpr, LispFunc, LispMacro, LispValue, State};
 
@@ -117,17 +117,19 @@ fn parse_expr(
         Token::OpenParen => LispExpr::Call(parse_call(tokens, state)?),
         Token::CloseParen => return Err(ParseError::UnbalancedParens),
         Token::Integer(l) => LispExpr::Value(LispValue::Integer(l)),
-        Token::OpVar(o) => if let Some(mac) = LispMacro::from_str(&o) {
-            LispExpr::Macro(mac)
-        } else if let Some(built_in) = BuiltIn::from_str(&o) {
-            LispExpr::Value(LispValue::Function(LispFunc::BuiltIn(built_in)))
-        } else if o == "#t" {
-            LispExpr::Value(LispValue::Boolean(true))
-        } else if o == "#f" {
-            LispExpr::Value(LispValue::Boolean(false))
-        } else {
-            LispExpr::OpVar(state.intern(o))
-        },
+        Token::OpVar(o) => {
+            if let Some(mac) = LispMacro::from_str(&o) {
+                LispExpr::Macro(mac)
+            } else if let Some(built_in) = BuiltIn::from_str(&o) {
+                LispExpr::Value(LispValue::Function(LispFunc::BuiltIn(built_in)))
+            } else if o == "#t" {
+                LispExpr::Value(LispValue::Boolean(true))
+            } else if o == "#f" {
+                LispExpr::Value(LispValue::Boolean(false))
+            } else {
+                LispExpr::OpVar(state.intern(o))
+            }
+        }
     })
 }
 
@@ -147,9 +149,9 @@ mod tests {
     #[test]
     fn parse_simple_builtin() {
         let lit = "add1";
-        let expected = Ok(LispExpr::Value(
-            LispValue::Function(LispFunc::BuiltIn(BuiltIn::AddOne)),
-        ));
+        let expected = Ok(LispExpr::Value(LispValue::Function(LispFunc::BuiltIn(
+            BuiltIn::AddOne,
+        ))));
 
         let result = parse_lisp_string(lit, &mut State::default());
         assert_eq!(expected, result);
@@ -167,9 +169,9 @@ mod tests {
     #[test]
     fn parse_integer() {
         let lit = "(55)";
-        let expected = Ok(LispExpr::Call(
-            vec![LispExpr::Value(LispValue::Integer(55))],
-        ));
+        let expected = Ok(LispExpr::Call(vec![LispExpr::Value(LispValue::Integer(
+            55,
+        ))]));
 
         let result = parse_lisp_string(lit, &mut State::default());
         assert_eq!(expected, result);

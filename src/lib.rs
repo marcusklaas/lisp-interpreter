@@ -10,19 +10,19 @@ extern crate string_interner;
 #[cfg(test)]
 extern crate test;
 
-pub mod parse;
 pub mod evaluator;
+pub mod parse;
 pub mod print;
 
-use std::mem::{replace, transmute_copy};
-use std::convert::From;
-use std::fmt;
-use std::sync::Arc;
 use std::cell::UnsafeCell;
 use std::collections::hash_map;
 use std::collections::HashMap;
-use string_interner::StringInterner;
+use std::convert::From;
+use std::fmt;
+use std::mem::{replace, transmute_copy};
 use std::ops::{Add, Index, Sub};
+use std::sync::Arc;
+use string_interner::StringInterner;
 
 macro_rules! destructure {
     ( $y:ident, $x:expr ) => {{$x}};
@@ -310,10 +310,11 @@ impl LispFunc {
         args: I,
     ) -> LispFunc {
         let arg_count = total_args - supplied_args;
-        let funk = Box::new(FinalizedExpr::Value(
-            LispValue::Function(LispFunc::Custom(f)),
-        ));
-        let arg_vec = args.map(FinalizedExpr::Value)
+        let funk = Box::new(FinalizedExpr::Value(LispValue::Function(LispFunc::Custom(
+            f,
+        ))));
+        let arg_vec = args
+            .map(FinalizedExpr::Value)
             .chain((0..total_args - supplied_args).map(From::from).map(|o| {
                 FinalizedExpr::Argument(o, Scope::default(), VariableConstraint::Unconstrained)
             }))
@@ -381,9 +382,9 @@ impl FinalizedExpr {
     fn remove_subs_of(self, offset: StackOffset, scope: Scope) -> Self {
         match self {
             FinalizedExpr::FunctionCall(f, args, tail_call, self_call) => {
-                if let FinalizedExpr::Value(
-                    LispValue::Function(LispFunc::BuiltIn(BuiltIn::SubOne)),
-                ) = *f
+                if let FinalizedExpr::Value(LispValue::Function(LispFunc::BuiltIn(
+                    BuiltIn::SubOne,
+                ))) = *f
                 {
                     if let Some(&FinalizedExpr::Argument(e_offset, e_scope, _)) = args.get(0) {
                         if args.len() == 1 && offset == e_offset && e_scope == scope {
@@ -440,12 +441,13 @@ impl FinalizedExpr {
                 body.only_use_after_sub(offset, scope, false)
             }
             FinalizedExpr::FunctionCall(ref f, ref args, _, _) => {
-                let is_sub = FinalizedExpr::Value(
-                    LispValue::Function(LispFunc::BuiltIn(BuiltIn::SubOne)),
-                ) == **f;
+                let is_sub =
+                    FinalizedExpr::Value(LispValue::Function(LispFunc::BuiltIn(BuiltIn::SubOne)))
+                        == **f;
 
                 f.only_use_after_sub(offset, scope, is_sub)
-                    && args.iter()
+                    && args
+                        .iter()
                         .all(|a| a.only_use_after_sub(offset, scope, is_sub))
             }
         }
@@ -456,7 +458,10 @@ impl FinalizedExpr {
         match *self {
             FinalizedExpr::Argument(index, arg_scope, move_status) if arg_scope < scope_level => {
                 if move_status == VariableConstraint::Unconstrained {
-                    FinalizedExpr::Value(replace(&mut stack[index.to_usize()], LispValue::Boolean(false)))
+                    FinalizedExpr::Value(replace(
+                        &mut stack[index.to_usize()],
+                        LispValue::Boolean(false),
+                    ))
                 } else {
                     FinalizedExpr::Value(stack[index.to_usize()].clone())
                 }
@@ -707,10 +712,10 @@ impl LispExpr {
                             // Move analysis: a function argument is still moveable
                             // when it has been moved in neither the true branch or
                             // the false branch.
-                            for (&mut (_, (_, _, ref mut arg_true)), &(_, (_, _, arg_false))) in
-                                ctx.arguments
-                                    .iter_mut()
-                                    .zip(false_expr_ctx.arguments.iter())
+                            for (&mut (_, (_, _, ref mut arg_true)), &(_, (_, _, arg_false))) in ctx
+                                .arguments
+                                .iter_mut()
+                                .zip(false_expr_ctx.arguments.iter())
                             {
                                 *arg_true = arg_false.combine(*arg_true);
                             }
@@ -810,9 +815,9 @@ impl LispExpr {
                         // we get the argument moves correctly. The last arguments
                         // get to use the moves first.
                         let mut arg_finalized_expr = Vec::with_capacity(expr_iter.size_hint().0);
-                        let caller = if let LispExpr::Value(
-                            LispValue::Function(LispFunc::BuiltIn(builtin)),
-                        ) = head_expr
+                        let caller = if let LispExpr::Value(LispValue::Function(
+                            LispFunc::BuiltIn(builtin),
+                        )) = head_expr
                         {
                             Some(builtin)
                         } else {
@@ -933,13 +938,15 @@ fn inner_compile(
         FinalizedExpr::Value(v) => {
             instructions.push(Instr::PushValue(v));
         }
-        FinalizedExpr::Variable(n) => if let Some(v) = state.get(n) {
-            instructions.push(Instr::PushValue(v.clone()));
-        } else {
-            return Err(EvaluationError::UnknownVariable(
-                state.resolve_intern(n).into(),
-            ));
-        },
+        FinalizedExpr::Variable(n) => {
+            if let Some(v) = state.get(n) {
+                instructions.push(Instr::PushValue(v.clone()));
+            } else {
+                return Err(EvaluationError::UnknownVariable(
+                    state.resolve_intern(n).into(),
+                ));
+            }
+        }
         FinalizedExpr::Cond(triple, true_expr_returns, tail_call_status) => {
             let unpacked = *triple;
             let (test, true_expr, false_expr) = unpacked;
@@ -969,9 +976,9 @@ fn inner_compile(
             }
 
             if let FinalizedExpr::FunctionCall(ref f_box, ref args, ..) = test {
-                if let FinalizedExpr::Value(
-                    LispValue::Function(LispFunc::BuiltIn(BuiltIn::CheckZero)),
-                ) = **f_box
+                if let FinalizedExpr::Value(LispValue::Function(LispFunc::BuiltIn(
+                    BuiltIn::CheckZero,
+                ))) = **f_box
                 {
                     if let Some(&FinalizedExpr::Argument(offset, scope, _)) = args.get(0) {
                         // OK, so at this point we know we are jumping conditionally
@@ -1044,9 +1051,9 @@ fn inner_compile(
                             }
                             return Ok(());
                         }
-                        (BuiltIn::Car, offset, ..) |
-                        (BuiltIn::CheckNull, offset, ..) |
-                        (BuiltIn::CheckZero, offset, ..) => {
+                        (BuiltIn::Car, offset, ..)
+                        | (BuiltIn::CheckNull, offset, ..)
+                        | (BuiltIn::CheckZero, offset, ..) => {
                             // Inspection mode!
                             instructions.push(match bf {
                                 BuiltIn::CheckNull => Instr::VarCheckNull(offset),
@@ -1090,7 +1097,8 @@ fn inner_compile(
             }
 
             // Compiling all arguments
-            let arg_instr_vecs: Vec<_> = args.into_iter()
+            let arg_instr_vecs: Vec<_> = args
+                .into_iter()
                 .map(|expr| {
                     let mut sub_buf = Vec::new();
                     inner_compile(expr, state, &mut sub_buf, var_stats)?;
@@ -1149,8 +1157,8 @@ fn compile_finalized_expr(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::parse::{parse_lisp_string, ParseError};
+    use super::*;
     use quickcheck::{Arbitrary, Gen};
     use std::convert::From;
 
@@ -1208,7 +1216,8 @@ mod tests {
         check_lisp(
             &mut state,
             vec![&format!("(define {} 1337)", self_name)[..]],
-        ).unwrap();
+        )
+        .unwrap();
         let intern = state.intern(self_name);
         let expr = super::parse::parse_lisp_string(definition, &mut state).unwrap();
         let mut finalization_ctx = super::FinalizationContext::new(Some(intern));
@@ -1518,9 +1527,7 @@ mod tests {
     #[test]
     fn check_bool() {
         check_lisp_ok(
-            vec![
-                "(list (bool? #t) (bool? #f) (bool? 5) (bool? (list #t)) (bool? bool?))",
-            ],
+            vec!["(list (bool? #t) (bool? #f) (bool? 5) (bool? (list #t)) (bool? bool?))"],
             "(#t #t #f #f #f)",
         );
     }
@@ -1786,7 +1793,8 @@ mod tests {
                 "(define add (lambda (x y) (cond (zero? y) x (add (add1 x) (sub1 y)))))",
                 "(add)",
             ],
-        ).unwrap()
+        )
+        .unwrap()
         {
         } else {
             panic!("Expected function!");
@@ -1842,9 +1850,8 @@ mod tests {
     #[bench]
     fn bench_big_add(b: &mut super::test::Bencher) {
         let mut state = State::default();
-        let init_commands = vec![
-            "(define add (lambda (x y) (cond (zero? y) x (add (add1 x) (sub1 y)))))",
-        ];
+        let init_commands =
+            vec!["(define add (lambda (x y) (cond (zero? y) x (add (add1 x) (sub1 y)))))"];
 
         for cmd in init_commands {
             let expr = parse_lisp_string(cmd, &mut state).unwrap();
@@ -1879,7 +1886,8 @@ mod tests {
             let expr = parse_lisp_string(
                 "(foldr (map2 add (zip (range 1 50) (reverse (range 1 50)))) add 0)",
                 &mut state,
-            ).unwrap();
+            )
+            .unwrap();
             evaluator::eval(expr, &mut state).unwrap();
         });
     }
@@ -1912,7 +1920,8 @@ mod tests {
             let expr = parse_lisp_string(
                 "(sort (list 25 3 40 5 1 0 3 2 10 30 0 7 1 2 300 5 3 13 3 0 1 2 2 3 1))",
                 &mut state,
-            ).unwrap();
+            )
+            .unwrap();
             evaluator::eval(expr, &mut state).unwrap();
         });
     }
@@ -1930,7 +1939,8 @@ mod tests {
             let expr = parse_lisp_string(
                 "(sort' (list 25 3 40 5 1 0 3 2 10 30 0 7 1 2 300 5 3 13 3 0 1 2 2 3 1))",
                 &mut state,
-            ).unwrap();
+            )
+            .unwrap();
             evaluator::eval(expr, &mut state).unwrap();
         });
     }

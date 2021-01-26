@@ -1,9 +1,11 @@
-use super::{builtin_instr, compile_finalized_expr, CustomFunc, EvaluationError, EvaluationResult,
-            FinalizationContext, Instr, LispExpr, LispFunc, LispValue, StackOffset, State, TopExpr};
-use std::iter;
-use std::ops::Index;
-use std::mem::{replace, transmute};
+use super::{
+    builtin_instr, compile_finalized_expr, CustomFunc, EvaluationError, EvaluationResult,
+    FinalizationContext, Instr, LispExpr, LispFunc, LispValue, StackOffset, State, TopExpr,
+};
 use std::default::Default;
+use std::iter;
+use std::mem::{replace, transmute};
+use std::ops::Index;
 
 fn unitary_list<F: Fn(&mut Vec<LispValue>) -> EvaluationResult<LispValue>>(
     stack: &mut Vec<LispValue>,
@@ -26,7 +28,8 @@ fn remove_old_arguments(stack: &mut Vec<LispValue>, start: StackOffset, end: Sta
 
 struct StackRef {
     instr_pointer: usize,
-    #[allow(dead_code)] func: CustomFunc,
+    #[allow(dead_code)]
+    func: CustomFunc,
     stack_pointer: StackOffset,
     // This reference isn't really static - it refers to vector inside of
     // instr_vec. There's just no way to express this in Rust (I think!)
@@ -102,27 +105,34 @@ fn run(instructions: Vec<Instr>, state: &State) -> EvaluationResult<LispValue> {
                     break 'l;
                 }
             }
-            Instr::VarAddOne(offset) => if let LispValue::Integer(ref mut i) =
-                *value_stack.get_mut((frame.stack_pointer + offset).to_usize()).unwrap()
-            {
-                *i += 1;
-            } else {
-                return Err(EvaluationError::ArgumentTypeMismatch);
-            },
-            Instr::CondZeroJumpDecr(offset, jump_size) => if let LispValue::Integer(ref mut i) =
-                *value_stack.get_mut((frame.stack_pointer + offset).to_usize()).unwrap()
-            {
-                if *i == 0 {
-                    frame.instr_pointer -= jump_size;
+            Instr::VarAddOne(offset) => {
+                if let LispValue::Integer(ref mut i) = *value_stack
+                    .get_mut((frame.stack_pointer + offset).to_usize())
+                    .unwrap()
+                {
+                    *i += 1;
                 } else {
-                    *i -= 1;
+                    return Err(EvaluationError::ArgumentTypeMismatch);
                 }
-            } else {
-                return Err(EvaluationError::ArgumentTypeMismatch);
-            },
+            }
+            Instr::CondZeroJumpDecr(offset, jump_size) => {
+                if let LispValue::Integer(ref mut i) = *value_stack
+                    .get_mut((frame.stack_pointer + offset).to_usize())
+                    .unwrap()
+                {
+                    if *i == 0 {
+                        frame.instr_pointer -= jump_size;
+                    } else {
+                        *i -= 1;
+                    }
+                } else {
+                    return Err(EvaluationError::ArgumentTypeMismatch);
+                }
+            }
             Instr::VarCheckNull(offset) => {
-                let head = if let LispValue::List(ref l) =
-                    *value_stack.get((frame.stack_pointer + offset).to_usize()).unwrap()
+                let head = if let LispValue::List(ref l) = *value_stack
+                    .get((frame.stack_pointer + offset).to_usize())
+                    .unwrap()
                 {
                     LispValue::Boolean(l.is_empty())
                 } else {
@@ -132,8 +142,9 @@ fn run(instructions: Vec<Instr>, state: &State) -> EvaluationResult<LispValue> {
                 value_stack.push(head);
             }
             Instr::VarCheckZero(offset) => {
-                let head = if let LispValue::Integer(i) =
-                    *value_stack.get((frame.stack_pointer + offset).to_usize()).unwrap()
+                let head = if let LispValue::Integer(i) = *value_stack
+                    .get((frame.stack_pointer + offset).to_usize())
+                    .unwrap()
                 {
                     LispValue::Boolean(i == 0)
                 } else {
@@ -143,8 +154,9 @@ fn run(instructions: Vec<Instr>, state: &State) -> EvaluationResult<LispValue> {
                 value_stack.push(head);
             }
             Instr::VarSplit(offset) => {
-                let head = if let LispValue::List(ref mut list) =
-                    *value_stack.get_mut((frame.stack_pointer + offset).to_usize()).unwrap()
+                let head = if let LispValue::List(ref mut list) = *value_stack
+                    .get_mut((frame.stack_pointer + offset).to_usize())
+                    .unwrap()
                 {
                     if let Some(elem) = list.pop() {
                         elem
@@ -160,7 +172,9 @@ fn run(instructions: Vec<Instr>, state: &State) -> EvaluationResult<LispValue> {
             Instr::VarReverseSplit(offset) => {
                 // TODO: see if we can do this more efficiently/ elegantly
                 let tail = {
-                    let reference = value_stack.get_mut((frame.stack_pointer + offset).to_usize()).unwrap();
+                    let reference = value_stack
+                        .get_mut((frame.stack_pointer + offset).to_usize())
+                        .unwrap();
                     let mut head = if let LispValue::List(ref mut list) = *reference {
                         if let Some(elem) = list.pop() {
                             elem
@@ -178,8 +192,9 @@ fn run(instructions: Vec<Instr>, state: &State) -> EvaluationResult<LispValue> {
                 value_stack.push(tail);
             }
             Instr::VarCar(offset) => {
-                let head = if let LispValue::List(ref list) =
-                    *value_stack.get((frame.stack_pointer + offset).to_usize()).unwrap()
+                let head = if let LispValue::List(ref list) = *value_stack
+                    .get((frame.stack_pointer + offset).to_usize())
+                    .unwrap()
                 {
                     if let Some(elem) = list.last().cloned() {
                         elem
@@ -214,13 +229,15 @@ fn run(instructions: Vec<Instr>, state: &State) -> EvaluationResult<LispValue> {
             Instr::Jump(n) => {
                 frame.instr_pointer -= n;
             }
-            Instr::CondJump(n) => if let LispValue::Boolean(b) = value_stack.pop().unwrap() {
-                if b {
-                    frame.instr_pointer -= n;
+            Instr::CondJump(n) => {
+                if let LispValue::Boolean(b) = value_stack.pop().unwrap() {
+                    if b {
+                        frame.instr_pointer -= n;
+                    }
+                } else {
+                    return Err(EvaluationError::ArgumentTypeMismatch);
                 }
-            } else {
-                return Err(EvaluationError::ArgumentTypeMismatch);
-            },
+            }
             Instr::PushValue(ref v) => {
                 value_stack.push(v.clone());
             }
@@ -231,7 +248,9 @@ fn run(instructions: Vec<Instr>, state: &State) -> EvaluationResult<LispValue> {
             }
             Instr::MoveArgument(offset) => {
                 let val = replace(
-                    value_stack.get_mut((frame.stack_pointer + offset).to_usize()).unwrap(),
+                    value_stack
+                        .get_mut((frame.stack_pointer + offset).to_usize())
+                        .unwrap(),
                     LispValue::Boolean(false),
                 );
                 value_stack.push(val);
@@ -341,10 +360,9 @@ fn run(instructions: Vec<Instr>, state: &State) -> EvaluationResult<LispValue> {
                     return Err(EvaluationError::ArgumentTypeMismatch);
                 };
             }
-            Instr::CheckNull => unitary_list(
-                &mut value_stack,
-                |vec| Ok(LispValue::Boolean(vec.is_empty())),
-            )?,
+            Instr::CheckNull => unitary_list(&mut value_stack, |vec| {
+                Ok(LispValue::Boolean(vec.is_empty()))
+            })?,
             Instr::AddOne => {
                 if let LispValue::Integer(ref mut i) = *value_stack.last_mut().unwrap() {
                     *i += 1;
