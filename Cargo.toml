@@ -11,8 +11,8 @@ default-features = false
 features = []
 
 [dev-dependencies]
-quickcheck = "0.4"
-quickcheck_macros = "0.4"
+quickcheck = "1"
+quickcheck_macros = "1"
 
 [features]
 default = []

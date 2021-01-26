@@ -1,9 +1,11 @@
-#![cfg_attr(test, plugin(quickcheck_macros))]
-#![cfg_attr(feature = "clippy", plugin(clippy))]
 #![cfg_attr(test, feature(test))]
 
 #[cfg(test)]
 extern crate quickcheck;
+#[cfg(test)]
+#[macro_use(quickcheck)]
+extern crate quickcheck_macros;
+
 extern crate string_interner;
 #[cfg(test)]
 extern crate test;
@@ -1220,13 +1222,13 @@ mod tests {
     }
 
     impl Arbitrary for LispValue {
-        fn arbitrary<G: Gen>(g: &mut G) -> LispValue {
+        fn arbitrary(g: &mut Gen) -> LispValue {
             enum ValueVariant {
                 List,
                 Int,
                 Bool,
                 Func,
-            };
+            }
 
             let choices = [
                 ValueVariant::List,
@@ -1237,14 +1239,14 @@ mod tests {
             let variant = g.choose(&choices).unwrap();
 
             match *variant {
-                ValueVariant::Int => LispValue::Integer(g.gen()),
-                ValueVariant::Bool => LispValue::Boolean(g.gen()),
+                ValueVariant::Int => LispValue::Integer(u64::arbitrary(g)),
+                ValueVariant::Bool => LispValue::Boolean(bool::arbitrary(g)),
                 ValueVariant::List => {
                     // We shouldn't generate lists too long too often,
                     // or this procedure will not terminate with finite
                     // probability.
                     let max_len = choices.len();
-                    let len = (g.next_u64() as usize) % max_len;
+                    let len = g.size() % max_len;
                     let mut vek = Vec::new();
 
                     for _ in 0..len {
