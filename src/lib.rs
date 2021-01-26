@@ -1,7 +1,6 @@
 #![cfg_attr(test, plugin(quickcheck_macros))]
 #![cfg_attr(feature = "clippy", plugin(clippy))]
 #![cfg_attr(test, feature(test))]
-#![feature(plugin, splice, slice_patterns, slice_get_slice, collections_range)]
 
 #[cfg(test)]
 extern crate quickcheck;
@@ -21,8 +20,7 @@ use std::cell::UnsafeCell;
 use std::collections::hash_map;
 use std::collections::HashMap;
 use string_interner::StringInterner;
-use std::slice::SliceIndex;
-use std::ops::{Add, Index, IndexMut, Sub};
+use std::ops::{Add, Index, Sub};
 
 macro_rules! destructure {
     ( $y:ident, $x:expr ) => {{$x}};
@@ -80,34 +78,6 @@ impl Sub for StackOffset {
 
     fn sub(self, other: Self) -> Self::Output {
         StackOffset(self.0 - other.0)
-    }
-}
-
-impl SliceIndex<[LispValue]> for StackOffset {
-    type Output = LispValue;
-
-    fn get(self, slice: &[LispValue]) -> Option<&Self::Output> {
-        slice.get(self.to_usize())
-    }
-
-    fn get_mut(self, slice: &mut [LispValue]) -> Option<&mut Self::Output> {
-        slice.get_mut(self.to_usize())
-    }
-
-    unsafe fn get_unchecked(self, _slice: &[LispValue]) -> &Self::Output {
-        unimplemented!()
-    }
-
-    unsafe fn get_unchecked_mut(self, _slice: &mut [LispValue]) -> &mut Self::Output {
-        unimplemented!()
-    }
-
-    fn index(self, slice: &[LispValue]) -> &Self::Output {
-        slice.index(self.to_usize())
-    }
-
-    fn index_mut(self, slice: &mut [LispValue]) -> &mut Self::Output {
-        slice.index_mut(self.to_usize())
     }
 }
 
@@ -484,9 +454,9 @@ impl FinalizedExpr {
         match *self {
             FinalizedExpr::Argument(index, arg_scope, move_status) if arg_scope < scope_level => {
                 if move_status == VariableConstraint::Unconstrained {
-                    FinalizedExpr::Value(replace(&mut stack[index], LispValue::Boolean(false)))
+                    FinalizedExpr::Value(replace(&mut stack[index.to_usize()], LispValue::Boolean(false)))
                 } else {
-                    FinalizedExpr::Value(stack[index].clone())
+                    FinalizedExpr::Value(stack[index.to_usize()].clone())
                 }
             }
             FinalizedExpr::FunctionCall(ref head, ref vec, is_tail_call, is_self_call) => {

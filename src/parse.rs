@@ -68,7 +68,7 @@ impl<'a> Iterator for Tokens<'a> {
                 '(' => Some(Token::OpenParen),
                 ')' => Some(Token::CloseParen),
                 x if x.is_whitespace() => continue,
-                x @ '0'...'9' => Some(parse_integer(x, &mut self.chars)),
+                x @ '0'..='9' => Some(parse_integer(x, &mut self.chars)),
                 x => Some(parse_func(x, &mut self.chars)),
             };
         }

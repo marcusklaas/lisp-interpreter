@@ -21,7 +21,7 @@ fn unitary_list<F: Fn(&mut Vec<LispValue>) -> EvaluationResult<LispValue>>(
 }
 
 fn remove_old_arguments(stack: &mut Vec<LispValue>, start: StackOffset, end: StackOffset) {
-    stack.splice(From::from(start)..From::from(end), iter::empty());
+    stack.splice(start.to_usize()..end.to_usize(), iter::empty());
 }
 
 struct StackRef {
@@ -103,14 +103,14 @@ fn run(instructions: Vec<Instr>, state: &State) -> EvaluationResult<LispValue> {
                 }
             }
             Instr::VarAddOne(offset) => if let LispValue::Integer(ref mut i) =
-                *value_stack.get_mut(frame.stack_pointer + offset).unwrap()
+                *value_stack.get_mut((frame.stack_pointer + offset).to_usize()).unwrap()
             {
                 *i += 1;
             } else {
                 return Err(EvaluationError::ArgumentTypeMismatch);
             },
             Instr::CondZeroJumpDecr(offset, jump_size) => if let LispValue::Integer(ref mut i) =
-                *value_stack.get_mut(frame.stack_pointer + offset).unwrap()
+                *value_stack.get_mut((frame.stack_pointer + offset).to_usize()).unwrap()
             {
                 if *i == 0 {
                     frame.instr_pointer -= jump_size;
@@ -122,7 +122,7 @@ fn run(instructions: Vec<Instr>, state: &State) -> EvaluationResult<LispValue> {
             },
             Instr::VarCheckNull(offset) => {
                 let head = if let LispValue::List(ref l) =
-                    *value_stack.get(frame.stack_pointer + offset).unwrap()
+                    *value_stack.get((frame.stack_pointer + offset).to_usize()).unwrap()
                 {
                     LispValue::Boolean(l.is_empty())
                 } else {
@@ -133,7 +133,7 @@ fn run(instructions: Vec<Instr>, state: &State) -> EvaluationResult<LispValue> {
             }
             Instr::VarCheckZero(offset) => {
                 let head = if let LispValue::Integer(i) =
-                    *value_stack.get(frame.stack_pointer + offset).unwrap()
+                    *value_stack.get((frame.stack_pointer + offset).to_usize()).unwrap()
                 {
                     LispValue::Boolean(i == 0)
                 } else {
@@ -144,7 +144,7 @@ fn run(instructions: Vec<Instr>, state: &State) -> EvaluationResult<LispValue> {
             }
             Instr::VarSplit(offset) => {
                 let head = if let LispValue::List(ref mut list) =
-                    *value_stack.get_mut(frame.stack_pointer + offset).unwrap()
+                    *value_stack.get_mut((frame.stack_pointer + offset).to_usize()).unwrap()
                 {
                     if let Some(elem) = list.pop() {
                         elem
@@ -160,7 +160,7 @@ fn run(instructions: Vec<Instr>, state: &State) -> EvaluationResult<LispValue> {
             Instr::VarReverseSplit(offset) => {
                 // TODO: see if we can do this more efficiently/ elegantly
                 let tail = {
-                    let reference = value_stack.get_mut(frame.stack_pointer + offset).unwrap();
+                    let reference = value_stack.get_mut((frame.stack_pointer + offset).to_usize()).unwrap();
                     let mut head = if let LispValue::List(ref mut list) = *reference {
                         if let Some(elem) = list.pop() {
                             elem
@@ -179,7 +179,7 @@ fn run(instructions: Vec<Instr>, state: &State) -> EvaluationResult<LispValue> {
             }
             Instr::VarCar(offset) => {
                 let head = if let LispValue::List(ref list) =
-                    *value_stack.get(frame.stack_pointer + offset).unwrap()
+                    *value_stack.get((frame.stack_pointer + offset).to_usize()).unwrap()
                 {
                     if let Some(elem) = list.last().cloned() {
                         elem
@@ -225,13 +225,13 @@ fn run(instructions: Vec<Instr>, state: &State) -> EvaluationResult<LispValue> {
                 value_stack.push(v.clone());
             }
             Instr::CloneArgument(offset) => {
-                let idx = frame.stack_pointer + offset;
+                let idx = (frame.stack_pointer + offset).to_usize();
                 let value = (&value_stack[..]).index(idx).clone();
                 value_stack.push(value);
             }
             Instr::MoveArgument(offset) => {
                 let val = replace(
-                    value_stack.get_mut(frame.stack_pointer + offset).unwrap(),
+                    value_stack.get_mut((frame.stack_pointer + offset).to_usize()).unwrap(),
                     LispValue::Boolean(false),
                 );
                 value_stack.push(val);
